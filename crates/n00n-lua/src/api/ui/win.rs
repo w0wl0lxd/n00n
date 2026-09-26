@@ -6,8 +6,8 @@ use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_class, lua_fn};
 
 use super::{
-    anchor_value, border_value, optional_bool, optional_field, parse_footer, split_value,
-    title_pos_value, try_parse_dimension,
+    FOOTER_FIELD, anchor_value, border_value, optional_bool, optional_field, parse_footer,
+    split_value, title_pos_value, try_parse_dimension,
 };
 use crate::api::util::command::{FloatConfigPatch, WinCommand, WinEvent};
 use crate::docs::{FnDoc, ParamDoc};
@@ -190,7 +190,7 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
 /// @param opts table Partial float config. Accepted fields:
 ///   - title (string): border title text.
 ///   - title_pos (string): title alignment, "left", "center", or "right".
-///   - footer (table): key-hint pairs `{{key, label}, ...}` shown in the bottom border.
+///   - footer (table): key-hint pairs `{{key, label}, ...}` shown in the bottom border; `{}` clears it.
 ///   - border (string): "rounded", "single", "double", or "none".
 ///   - anchor (string): corner origin, "NW", "NE", "SW", or "SE".
 ///   - width (integer|string): new width; integer or "N%".
@@ -208,10 +208,12 @@ fn set_config(_lua: &Lua, this: &WinHandle, opts: Table) -> LuaResult<()> {
     if this.closed.load(Ordering::Acquire) {
         return Ok(());
     }
-    let footer = parse_footer(&opts)?;
     let patch = FloatConfigPatch {
         title: optional_field(&opts, "title")?,
-        footer: (!footer.is_empty()).then_some(footer),
+        footer: opts
+            .contains_key(FOOTER_FIELD)?
+            .then(|| parse_footer(&opts))
+            .transpose()?,
         border: optional_field::<String>(&opts, "border")?
             .map(|value| border_value(&value))
             .transpose()?,
@@ -487,6 +489,26 @@ mod tests {
             cmd_rx.try_recv().is_err(),
             "a rejected patch must not be sent"
         );
+    }
+
+    #[test_case("{ title = \"t\" }", None ; "absent_footer_keeps_current")]
+    #[test_case("{ footer = {} }", Some(Vec::new()) ; "empty_footer_clears")]
+    #[test_case(
+        "{ footer = { { \"q\", \"quit\" } } }",
+        Some(vec![("q".to_owned(), "quit".to_owned())]) ;
+        "footer_entries_replace"
+    )]
+    fn set_config_footer_patch(opts: &str, expected: Option<Vec<(String, String)>>) {
+        let lua = mlua::Lua::new();
+        let (_event_tx, cmd_rx, handle) = make_channels();
+        lua.globals().set("win", handle).unwrap();
+
+        lua.load(format!("win:set_config({opts})")).exec().unwrap();
+
+        let Ok(WinCommand::SetConfig(patch)) = cmd_rx.try_recv() else {
+            panic!("set_config must send one SetConfig patch");
+        };
+        assert_eq!(patch.footer, expected);
     }
 
     #[test]

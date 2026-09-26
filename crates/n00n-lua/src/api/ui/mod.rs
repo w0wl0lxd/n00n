@@ -39,6 +39,7 @@ const DEFAULT_FOOTER_LABEL: &str = "";
 const UI_CHANNEL_CLOSED: &str = "ui reply channel closed";
 const UI_DISPATCH_FAILED: &str = "ui action channel full or closed";
 const HINT_LABEL_ERROR: &str = "status hint label must be a string";
+pub(crate) const FOOTER_FIELD: &str = "footer";
 
 use crate::runtime::with_task_bufs;
 use win::WinHandle;
@@ -84,7 +85,7 @@ fn publish_hint_snapshot(lua: &Lua) {
 }
 
 pub(crate) fn parse_footer(tbl: &Table) -> LuaResult<Vec<(String, String)>> {
-    let footer_tbl = match tbl.get::<mlua::Value>("footer")? {
+    let footer_tbl = match tbl.get::<mlua::Value>(FOOTER_FIELD)? {
         mlua::Value::Nil => return Ok(Vec::new()),
         mlua::Value::Table(t) => t,
         _ => {

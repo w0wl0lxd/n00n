@@ -4860,7 +4860,7 @@ Updates the window layout on the fly. Only the fields you include in
 - `{opts}` (`table`) Partial float config. Accepted fields:
   - `title` (`string`) border title text.
   - `title_pos` (`string`) title alignment, "left", "center", or "right".
-  - `footer` (`table`) key-hint pairs `{{key, label}, ...}` shown in the bottom border.
+  - `footer` (`table`) key-hint pairs `{{key, label}, ...}` shown in the bottom border; `{}` clears it.
   - `border` (`string`) "rounded", "single", "double", or "none".
   - `anchor` (`string`) corner origin, "NW", "NE", "SW", or "SE".
   - `width` (`integer|string`) new width; integer or "N%".
