@@ -18,6 +18,7 @@ use n00n_daemon::server;
 use tempfile::TempDir;
 
 const AGENT_ID: &str = "test-agent";
+const SERVER_THREAD_PANICKED: &str = "server thread panicked";
 
 fn sample_record() -> AgentRecord {
     AgentRecord {
@@ -149,9 +150,9 @@ where
     let result = f(&state_dir, backend);
 
     let _ = cancel_tx.send(());
-    if let Err(e) = handle.join() {
-        return Err(format!("server thread panicked: {e:?}"));
-    }
+    handle
+        .join()
+        .map_err(|_| SERVER_THREAD_PANICKED.to_string())??;
 
     result
 }
@@ -322,9 +323,9 @@ fn shutdown_releases_idle_connections() -> Result<(), String> {
     }
 
     cancel_tx.send(()).map_err(|e| e.to_string())?;
-    if let Err(e) = handle.join() {
-        return Err(format!("server thread panicked: {e:?}"));
-    }
+    handle
+        .join()
+        .map_err(|_| SERVER_THREAD_PANICKED.to_string())??;
 
     // Cancellation releases the clone asynchronously; the leaked task keeps it
     // for as long as this client stays connected.
