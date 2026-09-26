@@ -263,6 +263,7 @@ pub struct CodeHighlighter {
     checkpoint_parse: ParseState,
     checkpoint_highlight: HighlightState,
     completed_lines: usize,
+    completed_text: String,
     cached_segments: Vec<Vec<StyledSegment>>,
 }
 
@@ -289,18 +290,20 @@ impl CodeHighlighter {
             checkpoint_parse: ParseState::new(syntax),
             checkpoint_highlight: HighlightState::new(&syn_hl, ScopeStack::new()),
             completed_lines: 0,
+            completed_text: String::new(),
             cached_segments: Vec::new(),
         }
     }
 
-    /// Drop cached lines and rewind the parse state, so a shorter `code` cannot
-    /// leave the checkpoint describing text that no longer exists.
+    /// Drop cached lines and rewind the parse state, so shorter or edited `code`
+    /// cannot leave the checkpoint describing text that no longer exists.
     fn reset(&mut self) {
         let theme = theme();
         let syn_hl = SynHighlighter::new(&theme);
         self.checkpoint_parse = ParseState::new(self.syntax);
         self.checkpoint_highlight = HighlightState::new(&syn_hl, ScopeStack::new());
         self.completed_lines = 0;
+        self.completed_text.clear();
         self.cached_segments.clear();
     }
 
@@ -326,7 +329,7 @@ impl CodeHighlighter {
             total - 1
         };
 
-        if new_completed < self.completed_lines {
+        if !code.starts_with(self.completed_text.as_str()) {
             self.reset();
         }
 
@@ -339,6 +342,7 @@ impl CodeHighlighter {
 
             for raw in &raw_lines[self.completed_lines..new_completed] {
                 self.set_or_push(self.completed_lines, hl.highlight_line(raw));
+                self.completed_text.push_str(raw);
                 self.completed_lines += 1;
             }
 
@@ -498,9 +502,23 @@ mod tests {
         ch.update(code);
         ch.update("/* start\nstill comment\n");
         assert_eq!(
-            lines_text(ch.update(code)),
-            lines_text(&highlight_code("rust", code, "")),
+            ch.update(code),
+            highlight_code("rust", code, "").as_slice(),
             "shrinking must not keep highlight state from the longer text"
+        );
+    }
+
+    #[test_case("let a = 1;\n", "let a=1;\n"; "same_count_edit")]
+    #[test_case("/* a\nb\n", "// a\nb\n"; "edit_changes_later_state")]
+    #[test_case("let a = 1;\nx", "let b = 2;\nxy"; "edit_with_partial_tail")]
+    fn code_highlighter_resets_when_completed_prefix_changes(first: &str, second: &str) {
+        warmup();
+        let mut ch = CodeHighlighter::new("rust");
+        ch.update(first);
+        assert_eq!(
+            ch.update(second),
+            highlight_code("rust", second, "").as_slice(),
+            "an edited completed line must not return cached output"
         );
     }
 
