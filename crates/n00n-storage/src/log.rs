@@ -114,8 +114,20 @@ impl RotatingFileWriter {
         #[cfg(not(unix))]
         let needs_rotate = true;
 
-        if needs_rotate {
-            let last = self.max_files.saturating_sub(1);
+        let last = self.max_files.saturating_sub(1);
+        if needs_rotate && last == 0 {
+            // No backups to keep: truncate in place so every open append
+            // handle keeps writing to the reachable primary path. Skip when
+            // another writer already truncated it.
+            let log = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&primary)?;
+            if log.metadata()?.len() >= self.max_bytes {
+                log.set_len(0)?;
+            }
+        } else if needs_rotate {
             match fs::remove_file(file_path(&self.dir, last)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -167,6 +179,7 @@ impl Write for RotatingFileWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     const TEST_MAX_BYTES: u64 = 32;
     const TEST_MAX_FILES: u32 = 3;
@@ -235,6 +248,29 @@ mod tests {
 
         let current = fs::read_to_string(file_path(tmp.path(), 0)).unwrap();
         assert_eq!(current, "after");
+    }
+
+    #[test_case(0 ; "zero_max_files")]
+    #[test_case(1 ; "one_max_file")]
+    fn rotation_without_backups_truncates_shared_primary(max_files: u32) {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = file_path(tmp.path(), 0);
+        let mut w1 =
+            RotatingFileWriter::with_limits(tmp.path(), TEST_MAX_BYTES, max_files).unwrap();
+        let mut w2 =
+            RotatingFileWriter::with_limits(tmp.path(), TEST_MAX_BYTES, max_files).unwrap();
+
+        let filler = "x".repeat(usize::try_from(TEST_MAX_BYTES).unwrap());
+        w1.write_all(filler.as_bytes()).unwrap();
+        w1.flush().unwrap();
+        w1.write_all(b"from-w1").unwrap();
+        w1.flush().unwrap();
+        assert_eq!(fs::read_to_string(&primary).unwrap(), "from-w1");
+
+        w2.write_all(b"from-w2").unwrap();
+        w2.flush().unwrap();
+        assert_eq!(fs::read_to_string(&primary).unwrap(), "from-w1from-w2");
+        assert!(!file_path(tmp.path(), 1).exists());
     }
 
     #[test]

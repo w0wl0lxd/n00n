@@ -50,6 +50,8 @@ const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const CWD_INDEX_LOCK_FILE: &str = "cwd_latest.lock";
 const SCAN_CACHE_FILE: &str = "scan_cache_v3.json";
 const SCAN_CACHE_FILE_V2: &str = "scan_cache_v2.json";
+/// Whether [`FileSignature::file_id`] tells a replaced file apart.
+const SIGNATURE_HAS_FILE_ID: bool = cfg!(unix);
 const DEFAULT_TITLE: &str = "New session";
 const MAX_TITLE_LEN: usize = 60;
 const MAX_SNIPPET_BYTES: usize = 256;
@@ -4254,9 +4256,11 @@ struct ScanCacheEntry {
 
 /// Change detector for a session file. `mtime` keeps the full precision the
 /// filesystem reports, so same-size rewrites within one millisecond differ.
-/// `file_id` catches atomic rewrites that keep both size and timestamp: the
-/// inode on Unix, the creation time (100 ns ticks) on Windows. Fields missing
-/// from an older cache default to zero, which forces a rescan.
+/// `file_id` is the inode, which catches atomic rewrites that keep both size
+/// and timestamp. Other platforms have no stable std file identity (Windows
+/// creation time survives replacement through file tunneling), so there
+/// `file_id` is zero and cached headers are never reused. Fields missing from
+/// an older cache default to zero, which forces a rescan.
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct FileSignature {
     size: u64,
@@ -4283,9 +4287,7 @@ fn file_signature(path: &Path) -> Option<FileSignature> {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())?;
     #[cfg(unix)]
     let file_id = meta.ino();
-    #[cfg(windows)]
-    let file_id = meta.creation_time();
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     let file_id = 0;
     Some(FileSignature {
         size: meta.len(),
@@ -4309,10 +4311,12 @@ where
         let Some(signature) = file_signature(&path) else {
             continue;
         };
-        let entry = match cache.remove(name) {
-            Some(e) if e.signature == signature => e,
+        let cached = cache.remove(name);
+        let unchanged = cached.as_ref().is_some_and(|e| e.signature == signature);
+        let entry = match cached {
+            Some(e) if unchanged && SIGNATURE_HAS_FILE_ID => e,
             _ => {
-                dirty = true;
+                dirty |= !unchanged;
                 let header = scan_zst_header::<M>(&path);
                 ScanCacheEntry { signature, header }
             }
@@ -5280,6 +5284,7 @@ mod tests {
 
     /// A millisecond-aligned mtime, so sub-millisecond offsets stay in its tick.
     const SIGNATURE_BASE_MTIME: Duration = Duration::from_secs(1_700_000_000);
+    const COARSE_MTIME_SKIP: &str = "skipped: filesystem mtime resolution cannot store this offset";
 
     /// Marks the one live entry a depth-cap test must not lose.
     const LIVE_TEXT: &str = "live";
@@ -7945,9 +7950,15 @@ mod tests {
         let file = File::create(&path).unwrap();
         let base = UNIX_EPOCH + SIGNATURE_BASE_MTIME;
         file.set_modified(base).unwrap();
+        let stored_base = fs::metadata(&path).unwrap().modified().unwrap();
         let before = file_signature(&path).unwrap();
         file.set_modified(base + offset).unwrap();
+        let stored_offset = fs::metadata(&path).unwrap().modified().unwrap();
         let after = file_signature(&path).unwrap();
+        if !same && stored_offset == stored_base {
+            eprintln!("{COARSE_MTIME_SKIP}: {offset:?}");
+            return;
+        }
         assert_eq!(before == after, same);
     }
 
