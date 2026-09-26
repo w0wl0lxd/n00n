@@ -5826,6 +5826,7 @@ mod tests {
     /// A millisecond-aligned mtime, so sub-millisecond offsets stay in its tick.
     const SIGNATURE_BASE_MTIME: Duration = Duration::from_secs(1_700_000_000);
     const COARSE_MTIME_SKIP: &str = "skipped: filesystem mtime resolution cannot store this offset";
+    #[cfg(unix)]
     const COARSE_CTIME_SKIP: &str = "skipped: the rewrite landed in the same coarse ctime tick";
 
     /// Marks the one live entry a depth-cap test must not lose.
