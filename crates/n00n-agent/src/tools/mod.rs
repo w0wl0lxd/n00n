@@ -75,11 +75,12 @@ impl ToolFilter {
         match self {
             Self::Only(mut allowed) => {
                 for name in names {
+                    let canonical = canonical_tool_name(&name).to_owned();
                     if !allowed
                         .iter()
-                        .any(|held| canonical_tool_name(held) == canonical_tool_name(&name))
+                        .any(|held| canonical_tool_name(held) == canonical)
                     {
-                        allowed.push(name);
+                        allowed.push(canonical);
                     }
                 }
                 Self::Only(allowed)
@@ -181,7 +182,7 @@ impl ToolFilter {
                     .allowed_tools
                     .iter()
                     .filter(|s| is_builtin_tool(s))
-                    .cloned()
+                    .map(|s| canonical_tool_name(s).to_owned())
                     .collect(),
             )
         };
@@ -594,6 +595,17 @@ pub(crate) fn truncate_bytes(line: &str, max_bytes: usize) -> String {
 
 #[must_use]
 pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String {
+    truncate_output_impl(text, max_lines, max_bytes, true)
+}
+
+/// [`truncate_output`] without the truncation warning. For callers that bound
+/// many small pieces (per line/item) and report the truncation once themselves.
+#[must_use]
+pub fn truncate_output_quiet(text: &str, max_lines: usize, max_bytes: usize) -> String {
+    truncate_output_impl(text, max_lines, max_bytes, false)
+}
+
+fn truncate_output_impl(text: &str, max_lines: usize, max_bytes: usize, emit_warn: bool) -> String {
     const TRUNCATED_MARKER: &str = "[truncated]";
     if max_bytes == 0 || max_lines == 0 {
         return String::new();
@@ -643,15 +655,17 @@ pub fn truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> String
             result.truncate(result.floor_char_boundary(content_limit));
             result.push_str(&suffix);
         }
-        warn!(
-            tool = "truncate_output",
-            path = "",
-            original_bytes = text.len(),
-            truncated_bytes = result.len(),
-            max_bytes,
-            max_lines,
-            "truncated tool output"
-        );
+        if emit_warn {
+            warn!(
+                tool = "truncate_output",
+                path = "",
+                original_bytes = text.len(),
+                truncated_bytes = result.len(),
+                max_bytes,
+                max_lines,
+                "truncated tool output"
+            );
+        }
     }
     result
 }
@@ -749,6 +763,7 @@ pub fn interpreter_ctx(
             .or_else(|_| Model::from_spec("anthropic/claude-3-haiku-20240307"))
             .unwrap_or_else(|_| fallback_model()),
     );
+    let admission_scope = registry.admission().new_scope();
     ToolContext {
         provider: Arc::clone(&PROVIDER),
         model,
@@ -771,7 +786,7 @@ pub fn interpreter_ctx(
         subagent_cancels: Arc::new(CancelMap::new()),
         identity: None,
         registry,
-        admission_scope: crate::tools::ToolAdmission::new_scope(),
+        admission_scope,
         tool_filter: ToolFilter::All,
         workflow: false,
         audience: ToolAudience::MAIN,

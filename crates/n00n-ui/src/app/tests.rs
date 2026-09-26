@@ -78,6 +78,7 @@ fn build_app_with_session(
         mcp_config_errors: McpConfigErrors::new(PathBuf::new()),
         lua_command_reader: LuaCommandReader::empty(),
         keymap_reader: KeymapReader::empty(),
+        effective_keymap: Arc::new(EffectiveKeymap::default()),
         hint_reader: HintReader::empty(),
         storage_writer: writer,
         ui_config: UiConfig::default(),
@@ -324,6 +325,7 @@ fn session_api_prompt_is_explicitly_non_paint_gated() {
         text: "background prompt".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     });
     let SubmitOutcome::Started(actions) = outcome else {
         panic!("expected background prompt to start");
@@ -348,6 +350,7 @@ fn session_api_control_prompt_steers_with_control_tag() {
             text: "resume".into(),
             images: Vec::new(),
             control: true,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -361,12 +364,112 @@ fn session_api_control_prompt_steers_with_control_tag() {
 }
 
 #[test]
+fn control_run_delivery_survives_interrupt_extraction() {
+    let mut app = test_app();
+    let (sender, receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    app.status = Status::Streaming;
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-int".to_owned(),
+        child_run_id: "run-9".to_owned(),
+        source_revision: 2,
+    };
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "child finished".into(),
+            images: Vec::new(),
+            control: true,
+            run_delivery: Some(delivery.clone()),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    let Some(n00n_agent::ExtractedCommand::Interrupt(input, _)) =
+        receiver.poll(n00n_agent::InterruptPoint::ToolComplete)
+    else {
+        panic!("expected steering interrupt");
+    };
+    let extracted = input.run_delivery.expect("run delivery on interrupt input");
+    assert_eq!(extracted.delivery_id, delivery.delivery_id);
+    assert_eq!(extracted.child_run_id, delivery.child_run_id);
+    assert_eq!(extracted.source_revision, delivery.source_revision);
+}
+
+#[test]
+fn control_run_delivery_reaches_idle_start_dispatch() {
+    let mut app = test_app();
+    let (sender, _receiver) = shared_queue::queue();
+    app.queue.set_shared(sender);
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-idle".to_owned(),
+        child_run_id: "run-7".to_owned(),
+        source_revision: 1,
+    };
+
+    let SubmitOutcome::Started(actions) = app.submit_control_prompt(QueuedMessage {
+        text: "child finished".into(),
+        images: Vec::new(),
+        control: true,
+        run_delivery: Some(delivery),
+    }) else {
+        panic!("expected control prompt to start");
+    };
+    let Action::SendMessage(dispatch) = &actions[0] else {
+        panic!("expected submission dispatch");
+    };
+    assert_eq!(
+        dispatch
+            .input
+            .run_delivery
+            .as_ref()
+            .map(|d| d.delivery_id.as_str()),
+        Some("delivery-idle")
+    );
+}
+
+#[test]
+fn parent_run_delivery_metadata_is_persisted_with_control_queue_item() {
+    let mut app = test_app();
+    let (shared, _receiver) = shared_queue::queue();
+    app.queue.set_shared(shared);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let delivery = n00n_agent::ControlDeliveryMetadata {
+        delivery_id: "delivery-1".to_owned(),
+        child_run_id: "run-1".to_owned(),
+        source_revision: 3,
+    };
+
+    assert!(matches!(
+        app.submit_control_prompt(QueuedMessage {
+            text: "child completed".to_owned(),
+            images: Vec::new(),
+            control: true,
+            run_delivery: Some(delivery),
+        }),
+        SubmitOutcome::Queued
+    ));
+
+    let snapshot = app.session_snapshot();
+    assert!(snapshot.meta.contains_run_delivery("delivery-1"));
+    let stored = snapshot
+        .meta
+        .queued_submissions
+        .first()
+        .and_then(|message| message.run_delivery.as_ref())
+        .expect("stored run delivery");
+    assert_eq!(stored.child_run_id, "run-1");
+    assert_eq!(stored.source_revision, 3);
+}
+#[test]
 fn background_persistence_failure_is_terminal_without_composer_restore() {
     let mut app = test_app();
     let SubmitOutcome::Started(actions) = app.submit_background_prompt(QueuedMessage {
         text: "background prompt".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     }) else {
         panic!("expected background prompt to start");
     };
@@ -380,6 +483,7 @@ fn background_persistence_failure_is_terminal_without_composer_restore() {
             text: "queued after failure".into(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -949,6 +1053,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
             image_count: 0,
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         },
         app.run_id,
     ));
@@ -1017,6 +1122,7 @@ fn queued_msg(text: &str) -> QueuedMessage {
         text: text.into(),
         images: vec![],
         control: false,
+        run_delivery: None,
     }
 }
 
@@ -2721,6 +2827,7 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
         text: "original".into(),
         images: vec![image],
         control: true,
+        run_delivery: None,
     }));
     app.queue_and_notify(queued_msg("after"));
     app.queue.set_focus_at(1);
@@ -2737,9 +2844,10 @@ fn ctrl_c_cancels_queue_edit_and_restores_original_message() {
         app.input_box.buffer.value()
     );
     let queued = app.queue.queued_inputs();
-    let (input, delivery) = &queued[1];
+    let (input, delivery, run_delivery) = &queued[1];
     assert_eq!(input.message, "original");
     assert_eq!(*delivery, Delivery::Steering);
+    assert!(run_delivery.is_none());
     assert!(input.control);
     assert_eq!(input.images.len(), 1);
     assert_eq!(input.images[0].media_type, ImageMediaType::Png);
@@ -3471,6 +3579,7 @@ fn turn_error_preserves_queued_prompt_in_memory_and_after_restart() {
             text: "queued through turn error".into(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -3545,6 +3654,7 @@ fn draw_failure_pending_submission_restores_fifo_images_and_control_after_restar
             text: "second control in fifo".into(),
             images: Vec::new(),
             control: true,
+            run_delivery: None,
         }),
         SubmitOutcome::Queued
     ));
@@ -4995,7 +5105,7 @@ fn builtin_runs_when_no_override() {
     assert!(app.help_modal.is_open());
 }
 #[test]
-fn overlay_wins_over_override_when_plan_form_open() {
+fn plan_toggle_beats_override_when_open_and_after_dismiss() {
     let entry = n00n_lua::KeymapEntry {
         key: kb::PLAN_TOGGLE.code,
         modifiers: kb::PLAN_TOGGLE.modifiers,
@@ -5005,12 +5115,62 @@ fn overlay_wins_over_override_when_plan_form_open() {
     };
     let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
     let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
     app.keymap_reader = reader;
     assert!(app.plan_form.is_visible());
-    assert!(app.lua_event_handle.is_none());
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(
+        !app.plan_form.is_visible(),
+        "open plan form must consume Ctrl+T before the override"
+    );
+
+    app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
+    assert!(
+        app.plan_form.is_visible(),
+        "Ctrl+T must reopen the dismissed plan form despite the override"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not be dispatched when plan toggle wins"
+    );
+}
+
+#[test]
+fn open_editor_beats_override_after_plan_form_dismiss() {
+    let entry = n00n_lua::KeymapEntry {
+        key: kb::OPEN_EDITOR.code,
+        modifiers: kb::OPEN_EDITOR.modifiers,
+        desc: "plugin open editor override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 12,
+    };
+    let reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let mut app = plan_app();
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.keymap_reader = reader;
+    assert!(app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "open plan editor must run from the visible plan form"
+    );
 
     app.update(Msg::Key(kb::PLAN_TOGGLE.to_key_event()));
     assert!(!app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    assert!(
+        matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")),
+        "open plan editor must beat a plugin override in plan mode"
+    );
+    assert!(
+        probe.try_recv().is_none(),
+        "override callback must not be dispatched when open editor wins"
+    );
 }
 
 #[test_case(kb::PLAN_TOGGLE ; "ctrl_t")]
@@ -5151,6 +5311,133 @@ fn streaming_cancel_wins_over_esc_override() {
     assert_eq!(app.status, Status::Idle);
 }
 
+/// Build a test app whose effective keymap merges `keymap.toml` contents
+/// over the compiled-in defaults. Fixtures should be clean: parse and
+/// merge warnings fail the test.
+fn app_with_keymap(source: &str) -> App {
+    let (user, parse_warnings) = crate::keymap::file::parse(source, Path::new("test.toml"));
+    assert!(parse_warnings.is_empty(), "{parse_warnings:?}");
+    let (effective, merge_warnings) = EffectiveKeymap::build(&user);
+    assert!(merge_warnings.is_empty(), "{merge_warnings:?}");
+    let mut app = test_app();
+    app.effective_keymap = Arc::new(effective);
+    app
+}
+
+#[test]
+fn user_keymap_rebound_key_dispatches_action() {
+    let mut app = app_with_keymap("[general]\nhelp = \"f2\"");
+    assert!(!app.help_modal.is_open());
+
+    press(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+
+    assert!(app.help_modal.is_open());
+}
+
+#[test]
+fn user_keymap_replaced_key_no_longer_dispatches() {
+    let mut app = app_with_keymap("[general]\nhelp = \"f2\"");
+
+    press(&mut app, KeyCode::Char('h'), KeyModifiers::CONTROL);
+
+    assert!(
+        !app.help_modal.is_open(),
+        "ctrl-h must be dead once help is rebound to f2"
+    );
+}
+
+#[test]
+fn user_keymap_empty_list_unbinds() {
+    let mut app = app_with_keymap("[general]\ntasks = []");
+
+    press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+
+    assert!(
+        !app.task_picker.is_open(),
+        "ctrl-t must be dead once tasks is unbound"
+    );
+}
+
+#[test]
+fn lua_override_still_shadows_user_keymap() {
+    let mut app = app_with_keymap("[general]\nhelp = \"f2\"");
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::F(2),
+        modifiers: KeyModifiers::NONE,
+        desc: "plugin f2 override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 10,
+    };
+    app.keymap_reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+
+    let actions = app.update(Msg::Key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)));
+
+    assert!(actions.is_empty());
+    assert!(
+        !app.help_modal.is_open(),
+        "a Lua bind must shadow the user keymap, not just the defaults"
+    );
+}
+
+#[test]
+fn streaming_stop_key_follows_user_rebind() {
+    // `quit` moved to ctrl-x: during streaming the new key keeps the
+    // bypass-Lua privilege that protects the interrupt, and a Lua bind on
+    // it must not swallow the cancel.
+    let mut app = app_with_keymap("[general]\nquit = \"ctrl-x\"");
+    let entry = n00n_lua::KeymapEntry {
+        key: KeyCode::Char('x'),
+        modifiers: KeyModifiers::CONTROL,
+        desc: "plugin ctrl-x override".into(),
+        plugin: std::sync::Arc::from("test-plugin"),
+        id: 11,
+    };
+    app.keymap_reader = n00n_lua::test_support::keymap_reader_with(vec![entry]);
+    let (handle, _probe) = n00n_lua::test_support::probed_event_handle();
+    app.lua_event_handle = Some(handle);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    let actions = app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL,
+    )));
+
+    assert!(
+        matches!(&actions[0], Action::CancelAgent { .. }),
+        "a rebound quit key must still cancel the stream over a Lua bind"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn suspend_stays_reserved_with_user_keymap() {
+    // `suspend` and `ctrl-z` are rejected at parse time, so the file can
+    // never shadow the suspend check in handle_key.
+    let (user, warnings) = crate::keymap::file::parse(
+        "[general]\nsuspend = \"ctrl-x\"\nquit = \"ctrl-z\"",
+        Path::new("test.toml"),
+    );
+    assert_eq!(warnings.len(), 2);
+    let (effective, _) = EffectiveKeymap::build(&user);
+    let mut app = test_app();
+    app.effective_keymap = Arc::new(effective);
+
+    let actions = press(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    assert!(
+        actions.is_empty(),
+        "suspend was rejected, ctrl-x is unbound"
+    );
+
+    let actions = press(&mut app, kb::SUSPEND.code, kb::SUSPEND.modifiers);
+    assert!(
+        actions.iter().any(|a| matches!(a, Action::Suspend)),
+        "ctrl-z must still suspend"
+    );
+}
+
 #[test]
 fn reset_session_closes_plan_form() {
     let mut app = plan_app();
@@ -5193,6 +5480,7 @@ fn bash_prefix_overrides_mode() {
 #[test]
 fn thinking_toggle_cycles_off_adaptive() {
     let mut app = test_app();
+    app.state.model.id = "thinking-toggle-model".into();
     assert_eq!(app.state.thinking, ThinkingConfig::Off);
 
     app.execute_command(cmd("/thinking"));
@@ -5205,6 +5493,7 @@ fn thinking_toggle_cycles_off_adaptive() {
 #[test]
 fn thinking_explicit_args() {
     let mut app = test_app();
+    app.state.model.id = "thinking-args-model".into();
 
     app.execute_command(ParsedCommand {
         name: "/thinking".into(),
@@ -5229,6 +5518,26 @@ fn thinking_unsupported_model_flashes_error() {
     assert!(app.status_bar.flash_text().is_some());
 }
 
+#[test_case("zai/glm-5.2", false ; "zai_glm_5_2_gains_thinking_via_provider_adjustment")]
+#[test_case("mistral/ministral-14b-latest", true ; "mistral_ministral_loses_thinking_via_provider_adjustment")]
+fn cycle_remembered_thinking_applies_provider_adjustment_for_highlighted_model(
+    spec: &str,
+    expect_rejected: bool,
+) {
+    const REJECTED_FLASH: &str = "Thinking requires a model that supports it";
+    let mut app = test_app();
+    assert_ne!(
+        app.state.model.spec(),
+        spec,
+        "spec must not be the current model"
+    );
+
+    app.cycle_remembered_thinking(spec);
+
+    let rejected = app.status_bar.flash_text() == Some(REJECTED_FLASH);
+    assert_eq!(rejected, expect_rejected, "spec={spec}");
+}
+
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Vec<Action> {
     app.handle_key(KeyEvent::new(code, modifiers))
 }
@@ -5236,6 +5545,7 @@ fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Vec<Action> {
 #[test]
 fn alt_t_cycles_thinking() {
     let mut app = test_app();
+    app.state.model.id = "alt-t-model".into();
     assert_eq!(app.state.thinking, ThinkingConfig::Off);
 
     press(&mut app, KeyCode::Char('t'), KeyModifiers::ALT);
@@ -5248,6 +5558,7 @@ fn alt_t_cycles_thinking() {
 #[test]
 fn ctrl_shift_t_still_cycles_thinking() {
     let mut app = test_app();
+    app.state.model.id = "ctrl-shift-t-model".into();
     press(
         &mut app,
         KeyCode::Char('t'),
@@ -5269,12 +5580,16 @@ fn alt_i_toggles_transcript_details() {
 #[test]
 fn thinking_change_persists_model_memory() {
     let mut app = test_app();
+    app.state.model.id = "persist-memory-model".into();
     app.execute_command(ParsedCommand {
         name: "/thinking".into(),
         args: "high".into(),
     });
     let raw = std::fs::read_to_string(app.storage.path().join("model-thinking")).unwrap();
-    assert!(raw.contains("anthropic/test-model"), "memory file: {raw}");
+    assert!(
+        raw.contains("anthropic/persist-memory-model"),
+        "memory file: {raw}"
+    );
     assert!(raw.contains("high"), "memory file: {raw}");
 }
 
@@ -5299,6 +5614,8 @@ fn update_model_applies_remembered_thinking() {
 #[test]
 fn same_spec_update_keeps_session_thinking() {
     let mut app = test_app();
+    app.state.model.id = "same-spec-model".into();
+    app.state.session.model = app.state.model.spec();
     n00n_providers::model_registry::set_thinking_and_persist(
         app.state.model.spec(),
         n00n_storage::sessions::StoredThinking::Effort {
@@ -5309,6 +5626,7 @@ fn same_spec_update_keeps_session_thinking() {
     app.state.thinking = ThinkingConfig::Effort(Effort::Low);
 
     let mut same_spec = test_model();
+    same_spec.id = "same-spec-model".into();
     same_spec.context_window = 999_999;
     app.update_model(&same_spec);
     assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::Low));
@@ -5317,6 +5635,7 @@ fn same_spec_update_keeps_session_thinking() {
 #[test]
 fn update_model_without_memory_keeps_thinking() {
     let mut app = test_app();
+    app.state.model.id = "no-memory-model".into();
     app.execute_command(ParsedCommand {
         name: "/thinking".into(),
         args: "low".into(),
@@ -5363,6 +5682,7 @@ fn workflow_toggle_flows_into_agent_input() {
         text: "hi".into(),
         images: Vec::new(),
         control: false,
+        run_delivery: None,
     };
     assert!(!app.build_agent_input(&msg).workflow);
 

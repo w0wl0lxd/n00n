@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, UserData, UserDataMethods, Value};
@@ -190,6 +190,18 @@ fn load_toon_stats() -> ToonStats {
     ToonStats::default()
 }
 
+/// Persists `bytes` via `write`, logging once and giving up on failure
+/// rather than retrying the same write under the caller's lock.
+fn persist_toon_stats(
+    path: &Path,
+    bytes: &[u8],
+    write: impl Fn(&Path, &[u8]) -> Result<(), n00n_storage::StorageError>,
+) {
+    if let Err(e) = write(path, bytes) {
+        tracing::warn!(error = %e, "failed to write toon stats");
+    }
+}
+
 fn record_toon_stats(json_len: usize, toon_len: usize, used_toon: bool) {
     static STATS: OnceLock<Mutex<ToonStats>> = OnceLock::new();
     let guard = STATS.get_or_init(|| Mutex::new(load_toon_stats()));
@@ -204,7 +216,7 @@ fn record_toon_stats(json_len: usize, toon_len: usize, used_toon: bool) {
         if let Some(path) = toon_stats_path()
             && let Ok(bytes) = serde_json::to_vec(&*stats)
         {
-            let _ = n00n_storage::atomic_write(&path, &bytes);
+            persist_toon_stats(&path, &bytes, n00n_storage::atomic_write);
         }
     }
 }
@@ -284,6 +296,9 @@ lua_table! {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use mlua::Lua;
 
     fn lua_with_json() -> Lua {
@@ -388,5 +403,29 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(result, "1");
+    }
+
+    #[test]
+    fn persist_toon_stats_does_not_retry_a_failed_write() {
+        let attempts = AtomicUsize::new(0);
+        super::persist_toon_stats(Path::new("/tmp/toon_stats_test.json"), b"{}", |_, _| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(n00n_storage::StorageError::NotFound(
+                "simulated write failure".into(),
+            ))
+        });
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn persist_toon_stats_calls_write_once_on_success() {
+        let attempts = AtomicUsize::new(0);
+        super::persist_toon_stats(Path::new("/tmp/toon_stats_test.json"), b"{}", |_, _| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

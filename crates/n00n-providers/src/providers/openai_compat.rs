@@ -784,6 +784,9 @@ pub async fn parse_sse(
     opts: &RequestOptions,
 ) -> Result<StreamResponse, AgentError> {
     let mut stream = SseStream::new(reader, stream_timeout);
+    if let Some(flag) = opts.cancel_flag.clone() {
+        stream.set_cancel_flag(flag);
+    }
 
     let mut text = String::new();
     let mut reasoning_text = String::new();
@@ -1067,6 +1070,14 @@ pub async fn parse_sse(
             acc.name
         };
         content_blocks.push(ContentBlock::ToolUse { id, name, input });
+    }
+
+    if stop_reason.is_none()
+        && content_blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+    {
+        stop_reason = Some(StopReason::ToolUse);
     }
 
     // Not every OpenAI-compatible server emits `[DONE]`, so a terminal

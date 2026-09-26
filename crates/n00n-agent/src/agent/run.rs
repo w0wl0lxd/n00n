@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
@@ -137,9 +138,31 @@ pub fn resolve_compaction_model(
             openai_options,
         )
     {
+        // Compaction budgeting (target/budget/remaining) must never exceed the
+        // main chat model's context window: the retained transcript is fed back
+        // to that model, and the summarizer request must fit the compaction
+        // model's own window. The minimum satisfies both constraints. Only
+        // pricing and streaming use the compaction model's other fields.
+        m.context_window =
+            effective_compaction_context_window(m.context_window, model.context_window);
         return (Arc::from(p), m);
     }
     (Arc::clone(provider), model.clone())
+}
+
+/// Caps the compaction model's context window at the main model's, without
+/// letting a zero (undiscovered) window on either side collapse the budget
+/// to zero. A `0` means "unknown", not "no capacity": falling through to
+/// `min` when the compaction model reports `0` would zero out the whole
+/// compaction budget even though the main model's window is known and
+/// nonzero.
+#[must_use]
+fn effective_compaction_context_window(compaction_window: u32, main_window: u32) -> u32 {
+    match (compaction_window, main_window) {
+        (0, main) => main,
+        (compaction, 0) => compaction,
+        (compaction, main) => compaction.min(main),
+    }
 }
 
 enum TurnOutcome {
@@ -244,9 +267,10 @@ impl<'h> Agent<'h> {
             .identity
             .as_ref()
             .map(SessionIdentity::session_id)
-            .map_or_else(crate::tools::ToolAdmission::new_scope, |id| {
-                Arc::<str>::from(id.to_string())
-            });
+            .map_or_else(
+                || params.registry.admission().new_scope(),
+                |id| Arc::<str>::from(id.to_string()),
+            );
         let fusion_state = if fusion_enabled {
             Some(FusionState::new_lead())
         } else {
@@ -479,12 +503,14 @@ impl<'h> Agent<'h> {
             message_cache_breakpoints: adaptive_cache_breakpoints(user_message_count),
             openai_prompt_cache_mode: None,
             protect_history_replay,
-            allow_history_replay: self.permissions.is_yolo(),
+            allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             // Subagent runs share the root session's cache shard so sibling
             // bursts reuse one warm prefix bucket.
             cache_shard_key: self
@@ -596,12 +622,13 @@ impl<'h> Agent<'h> {
 
     /// History replay resends the full transcript. In YOLO mode this is
     /// auto-approved because the cost is bounded and the operation is idempotent.
-    /// The flag `allow_history_replay` is set from `is_yolo()` at `run()` start and
-    /// flipped after an explicit approval, so this bypasses the permission prompt
-    /// only when that flag or YOLO is set. Ambiguous replay intentionally does
-    /// NOT auto-approve in YOLO — it may duplicate provider charges/output.
+    /// YOLO is checked live so a mid-run toggle takes effect immediately; the
+    /// per-request `allow_history_replay` flag is recomputed from `is_yolo()`
+    /// each turn and flipped after an explicit approval. Ambiguous replay
+    /// intentionally does NOT auto-approve in YOLO — it may duplicate provider
+    /// charges/output.
     async fn approve_history_replay(&self, reason: HistoryReplayReason) -> Result<(), AgentError> {
-        if self.opts.allow_history_replay || self.permissions.is_yolo() {
+        if self.permissions.is_yolo() {
             return Ok(());
         }
         let scope = history_replay_scope(
@@ -676,6 +703,12 @@ impl<'h> Agent<'h> {
             return Err(AgentError::Cancelled);
         }
         let mut opts = self.opts.clone();
+        opts.allow_history_replay = self.permissions.is_yolo();
+        let approved_history_replay_flag = Arc::new(AtomicBool::new(false));
+        opts.allow_history_replay_live = Some(history_replay_live_check(
+            Arc::clone(&self.permissions),
+            Arc::clone(&approved_history_replay_flag),
+        ));
         let mut approved_history_replay = false;
         let mut approved_ambiguous_replay = false;
         let response = loop {
@@ -684,6 +717,7 @@ impl<'h> Agent<'h> {
                     self.approve_history_replay(reason).await?;
                     approved_history_replay = true;
                     opts.allow_history_replay = true;
+                    approved_history_replay_flag.store(true, Ordering::Relaxed);
                 }
                 Err(error @ AgentError::RequestSent { .. }) if !approved_ambiguous_replay => {
                     let metadata = match &error {
@@ -1082,7 +1116,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             definitions.extend(mcp.deferred_definitions());
             definitions.sort_by(|left, right| {
                 left.namespace.cmp(&right.namespace).then_with(|| {
@@ -1176,7 +1212,9 @@ impl<'h> Agent<'h> {
             self.supports_tool_examples,
             &active_snapshot,
         );
-        if let Some(mcp) = &self.mcp {
+        if self.allow_dynamic_mcp_tools
+            && let Some(mcp) = &self.mcp
+        {
             if self.provider.supports_hosted_tool_search(&self.model) {
                 mcp.extend_tools_hosted(&mut tools);
             } else {
@@ -1267,11 +1305,17 @@ impl<'h> Agent<'h> {
             if matches!(error, AgentError::Cancelled) {
                 return Err(error);
             }
-            warn!(
-                error = %error,
-                "auto-compaction failed; continuing without compacting"
-            );
-            return Ok(false);
+            if projected_context_size < self.model.context_window {
+                warn!(
+                    error = %error,
+                    context_size = projected_context_size,
+                    context_window = self.model.context_window,
+                    "auto-compaction failed but projected context still fits within the model's hard limit; continuing without compaction"
+                );
+                return Ok(false);
+            }
+            warn!(error = %error, "auto-compaction failed");
+            return Err(error);
         }
         Ok(true)
     }
@@ -1321,19 +1365,12 @@ impl<'h> Agent<'h> {
             return Err(AgentError::Cancelled);
         }
         self.event_tx.send(AgentEvent::AutoCompacting)?;
-        let (compact_provider, mut compact_model) = resolve_compaction_model(
+        let (compact_provider, compact_model) = resolve_compaction_model(
             &self.provider,
             &self.model,
             self.timeouts,
             self.openai_options.clone(),
         );
-        // Budgeting (target/budget/remaining) must use the main chat model's
-        // context window, not the compaction model's window which may differ
-        // (e.g. a cheaper compaction tier with a larger window would otherwise
-        // under-truncate, or a smaller window would over-truncate). Only pricing
-        // and streaming should use the compaction model.
-        let main_context_window = self.model.context_window;
-        compact_model.context_window = main_context_window;
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         #[cfg(test)]
         let run_hooks = matches!(self.test_compaction_hooks, TestCompactionHooks::Enabled);
@@ -1444,6 +1481,7 @@ impl<'h> Agent<'h> {
                         image_count: input.images.len(),
                         images: input.images.clone(),
                         control: input.control,
+                        run_delivery: input.run_delivery.clone(),
                     })?;
                     let appended_start = self.history.len();
                     for msg in std::mem::take(&mut input.preamble) {
@@ -1528,6 +1566,15 @@ fn ambiguous_request_replay_scope(metadata: Option<&RequestDeliveryMetadata>) ->
     format!(
         "Replay one provider request ({phase}; response ID {response_id}; output {output}). This may duplicate output or charges"
     )
+}
+
+/// Live YOLO check for `RequestOptions::allow_history_replay_live`; an
+/// explicit approval this turn stays sticky even if YOLO is toggled off after.
+fn history_replay_live_check(
+    permissions: Arc<PermissionManager>,
+    approved_this_turn: Arc<AtomicBool>,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    Arc::new(move || permissions.is_yolo() || approved_this_turn.load(Ordering::Relaxed))
 }
 
 fn history_replay_scope(
@@ -2876,6 +2923,7 @@ mod tests {
             control: false,
             prompt: None,
             plan_path: None,
+            run_delivery: None,
         }
     }
 
@@ -3034,6 +3082,22 @@ mod tests {
         model.context_window = context_window;
         model.max_output_tokens = Some(max_output_tokens);
         model
+    }
+
+    #[test_case(0,       200_000, 200_000 ; "zero_compaction_window_falls_back_to_main")]
+    #[test_case(50_000,  0,       50_000  ; "zero_main_window_keeps_compaction_window")]
+    #[test_case(0,       0,       0       ; "both_zero_stays_zero")]
+    #[test_case(80_000,  200_000, 80_000  ; "smaller_compaction_window_wins")]
+    #[test_case(200_000, 80_000,  80_000  ; "smaller_main_window_wins")]
+    fn effective_compaction_context_window_never_zeros_out_a_known_budget(
+        compaction_window: u32,
+        main_window: u32,
+        expected: u32,
+    ) {
+        assert_eq!(
+            effective_compaction_context_window(compaction_window, main_window),
+            expected
+        );
     }
 
     #[track_caller]
@@ -3567,7 +3631,8 @@ mod tests {
             input.control = control;
             let image = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
             input.images = vec![image.clone()];
-            let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(input, 0)]);
+            let source =
+                MockInterruptSource::new(vec![ExtractedCommand::Interrupt(Box::new(input), 0)]);
             let mut history = History::new(Vec::new());
             let (mut agent, _rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
             agent = agent.with_interrupt_source(source);
@@ -3590,6 +3655,42 @@ mod tests {
         });
     }
 
+    #[test]
+    fn queued_interrupt_emits_run_delivery_metadata() {
+        smol::block_on(async {
+            let mut input = default_input();
+            input.control = true;
+            input.run_delivery = Some(crate::ControlDeliveryMetadata {
+                delivery_id: "delivery-x".into(),
+                child_run_id: "run-42".into(),
+                source_revision: 5,
+            });
+            let source =
+                MockInterruptSource::new(vec![ExtractedCommand::Interrupt(Box::new(input), 0)]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent = agent.with_interrupt_source(source);
+            agent
+                .handle_queued_commands(InterruptPoint::Safe)
+                .await
+                .unwrap();
+            let events = drain_events(&event_rx);
+            let Some(AgentEvent::QueueItemConsumed { run_delivery, .. }) = events
+                .iter()
+                .map(|envelope| &envelope.event)
+                .find(|event| matches!(event, AgentEvent::QueueItemConsumed { .. }))
+            else {
+                panic!("expected QueueItemConsumed");
+            };
+            let delivery = run_delivery
+                .as_ref()
+                .expect("run delivery metadata on consumed event");
+            assert_eq!(delivery.delivery_id, "delivery-x");
+            assert_eq!(delivery.child_run_id, "run-42");
+            assert_eq!(delivery.source_revision, 5);
+        });
+    }
+
     #[test_case(Some(true),  false, true,  true  ; "after_tool_use_turn")]
     #[test_case(Some(false), false, true,  true  ; "after_text_only_turn")]
     #[test_case(Some(false), true,  true,  true  ; "control_after_text_only_turn")]
@@ -3605,7 +3706,8 @@ mod tests {
                 let mut input = default_input();
                 input.control = control;
                 Some(MockInterruptSource::new(vec![ExtractedCommand::Interrupt(
-                    input, 0,
+                    Box::new(input),
+                    0,
                 )]))
             } else {
                 None
@@ -3730,6 +3832,54 @@ mod tests {
                 )),
                 expected,
             );
+        });
+    }
+
+    #[test]
+    fn try_auto_compact_swallows_error_when_projected_context_still_fits() {
+        smol::block_on(async {
+            const COMPACTION_CHECKPOINT_FAILURE: &str = "disk full";
+            let mut history = History::new(vec![Message::user("go".into())]);
+            let (agent, event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut agent =
+                agent.with_compaction_checkpoint(|_, _| Err(COMPACTION_CHECKPOINT_FAILURE.into()));
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+            // Inside the compaction buffer (170_000 triggers is_overflow at 15%)
+            // but well below the model's hard 200_000-token context window.
+            agent.context_size = 170_000;
+
+            let result = agent.try_auto_compact(0).await.unwrap();
+
+            assert!(!result, "auto-compact should report no compaction happened");
+            assert!(has_event(&drain_events(&event_rx), |e| matches!(
+                e,
+                AgentEvent::AutoCompactFailed { error } if error.contains(COMPACTION_CHECKPOINT_FAILURE)
+            )));
+        });
+    }
+
+    #[test]
+    fn try_auto_compact_propagates_error_when_projected_context_exceeds_hard_limit() {
+        smol::block_on(async {
+            const COMPACTION_CHECKPOINT_FAILURE: &str = "disk full";
+            let mut history = History::new(vec![Message::user("go".into())]);
+            let (agent, _event_rx) = make_agent(
+                MockProvider::new(vec![text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            let mut agent =
+                agent.with_compaction_checkpoint(|_, _| Err(COMPACTION_CHECKPOINT_FAILURE.into()));
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+            // At the model's hard context window: continuing without
+            // compaction would exceed it, so the error must propagate.
+            agent.context_size = 200_000;
+
+            let error = agent.try_auto_compact(0).await.unwrap_err();
+
+            assert!(error.to_string().contains(COMPACTION_CHECKPOINT_FAILURE));
         });
     }
 

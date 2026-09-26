@@ -14,7 +14,9 @@ pub fn spawn_check() {
     smol::spawn(async {
         match version::fetch_latest_async().await {
             Ok(v) if is_newer(&v, CURRENT) => {
-                let _ = LATEST.set(v);
+                if LATEST.get().is_none() && LATEST.set(v).is_err() {
+                    tracing::debug!("latest version already recorded");
+                }
             }
             Ok(_) => {}
             Err(e) => {

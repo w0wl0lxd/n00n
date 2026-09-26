@@ -18,23 +18,6 @@ local function compact_text(value)
   return (value or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
 end
 
--- Longest prefix of {s} that is at most {max_bytes} bytes and still valid
--- UTF-8. Cutting mid-sequence would make n00n.json.encode return nil and
--- silently drop the whole entry instead of truncating it.
-local function utf8_prefix(s, max_bytes)
-  if max_bytes <= 0 then
-    return ""
-  end
-  if max_bytes >= #s then
-    return s
-  end
-  local cut = utf8.offset(s, 0, max_bytes + 1)
-  if not cut or cut <= 1 then
-    return ""
-  end
-  return s:sub(1, cut - 1)
-end
-
 function TodoPrompt.prompt_todo_line(item)
   if type(item) ~= "table" or type(item.status) ~= "string" or not VALID_STATUS[item.status] then
     return nil
@@ -43,6 +26,23 @@ function TodoPrompt.prompt_todo_line(item)
     return nil
   end
   return n00n.json.encode({ status = item.status, content = compact_text(item.content) })
+end
+
+-- Largest prefix length n' <= n such that s:sub(1, n') ends on a UTF-8 char
+-- boundary. A byte cut inside a multi-byte char produces invalid UTF-8 that
+-- n00n.json.encode rejects, so the cut must back off to the lead byte.
+local function utf8_prefix_len(s, n)
+  if n >= #s then
+    return #s
+  end
+  while n > 0 do
+    local b = s:byte(n + 1)
+    if not b or b < 0x80 or b >= 0xC0 then
+      break
+    end
+    n = n - 1
+  end
+  return n
 end
 
 local function shrink_line(line, avail)
@@ -54,20 +54,30 @@ local function shrink_line(line, avail)
   end
   local ok, decoded = pcall(n00n.json.decode, line)
   if ok and decoded and type(decoded.content) == "string" then
-    local overhead = #line - #decoded.content
-    local max_content = avail - overhead - 3
-    if max_content < 0 then
-      return nil
+    local content = decoded.content
+    -- JSON escaping can make the re-encoded line longer than the cut suggests;
+    -- re-measure and cut further a few times rather than dropping the entry.
+    local budget = avail - (#line - #content) - 3
+    for _ = 1, 4 do
+      if budget < 0 then
+        return nil
+      end
+      decoded.content = content:sub(1, utf8_prefix_len(content, budget)) .. "..."
+      local encoded = n00n.json.encode(decoded)
+      if type(encoded) ~= "string" then
+        return nil
+      end
+      if #encoded <= avail then
+        return encoded
+      end
+      budget = budget - (#encoded - avail)
     end
-    if #decoded.content > max_content then
-      decoded.content = utf8_prefix(decoded.content, max_content) .. "..."
-    end
-    return n00n.json.encode(decoded)
+    return nil
   end
   if avail < 4 then
     return nil
   end
-  return utf8_prefix(line, avail - 3) .. "..."
+  return line:sub(1, utf8_prefix_len(line, avail - 3)) .. "..."
 end
 
 function TodoPrompt.truncate_entries(raw_entries, budget)

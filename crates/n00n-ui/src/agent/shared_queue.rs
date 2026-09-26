@@ -14,7 +14,8 @@ use std::sync::{
 };
 
 use n00n_agent::{
-    AgentInput, ExtractedCommand, ImageSource, InterruptPoint, InterruptSource, PreDispatchGate,
+    AgentInput, ControlDeliveryMetadata, ExtractedCommand, ImageSource, InterruptPoint,
+    InterruptSource, PreDispatchGate,
 };
 
 use crate::components::input::Submission;
@@ -32,6 +33,7 @@ pub(crate) struct QueuedMessage {
     pub(crate) text: String,
     pub(crate) images: Vec<ImageSource>,
     pub(crate) control: bool,
+    pub(crate) run_delivery: Option<ControlDeliveryMetadata>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +49,7 @@ impl From<Submission> for QueuedMessage {
             text: sub.text,
             images: sub.images,
             control: sub.control,
+            run_delivery: None,
         }
     }
 }
@@ -69,6 +72,7 @@ pub(crate) enum QueueItem {
         /// for `QueueItemConsumed` before drawing.
         displayed: bool,
         delivery: Delivery,
+        run_delivery: Option<ControlDeliveryMetadata>,
     },
     Compact {
         run_id: u64,
@@ -115,7 +119,9 @@ impl QueueItem {
 
     fn into_extracted_command(self) -> Option<ExtractedCommand> {
         match self {
-            Self::Message { input, run_id, .. } => Some(ExtractedCommand::Interrupt(input, run_id)),
+            Self::Message { input, run_id, .. } => {
+                Some(ExtractedCommand::Interrupt(Box::new(input), run_id))
+            }
             Self::Compact { run_id } => Some(ExtractedCommand::Compact(run_id)),
             Self::DirectTool { .. } => None,
         }
@@ -328,13 +334,18 @@ impl QueueSender {
             .collect()
     }
 
-    pub(crate) fn queued_inputs(&self) -> Vec<(AgentInput, Delivery)> {
+    pub(crate) fn queued_inputs(
+        &self,
+    ) -> Vec<(AgentInput, Delivery, Option<ControlDeliveryMetadata>)> {
         lock(&self.items)
             .iter()
             .filter_map(|item| match item {
                 QueueItem::Message {
-                    input, delivery, ..
-                } => Some((input.clone(), *delivery)),
+                    input,
+                    delivery,
+                    run_delivery,
+                    ..
+                } => Some((input.clone(), *delivery, run_delivery.clone())),
                 QueueItem::Compact { .. } | QueueItem::DirectTool { .. } => None,
             })
             .collect()
@@ -460,6 +471,7 @@ mod tests {
                 control: false,
                 prompt: None,
                 plan_path: None,
+                run_delivery: None,
             },
             run_id: 0,
             submission_id: 0,
@@ -467,6 +479,7 @@ mod tests {
             ready: Arc::new(AtomicBool::new(true)),
             displayed,
             delivery: Delivery::TurnEnd,
+            run_delivery: None,
         }
     }
 
@@ -485,6 +498,7 @@ mod tests {
                 control: false,
                 prompt: None,
                 plan_path: None,
+                run_delivery: None,
             },
             run_id: 0,
             submission_id: 0,
@@ -492,6 +506,7 @@ mod tests {
             ready: Arc::new(AtomicBool::new(true)),
             displayed: false,
             delivery,
+            run_delivery: None,
         }
     }
 
@@ -522,6 +537,7 @@ mod tests {
                 control: false,
                 prompt: None,
                 plan_path: None,
+                run_delivery: None,
             },
             run_id: 0,
             submission_id: 0,
@@ -529,6 +545,7 @@ mod tests {
             ready: Arc::new(AtomicBool::new(true)),
             displayed: false,
             delivery,
+            run_delivery: None,
         };
         tx.push(queued("normal", Delivery::TurnEnd));
         tx.push(queued("steer one", Delivery::Steering));

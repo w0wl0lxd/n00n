@@ -7,7 +7,7 @@ pub mod token;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -465,7 +465,7 @@ impl fmt::Debug for BackgroundAuthBackoff {
 
 impl BackgroundAuthBackoff {
     fn entries(&self) -> MutexGuard<'_, HashMap<String, BackoffEntry>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.lock().unwrap_or_else(|_| std::process::abort())
     }
 
     /// Claims the right to authenticate `server` in the background.

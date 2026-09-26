@@ -14,6 +14,7 @@ use n00n_config::{Config, load_env_files, load_permissions};
 use n00n_lua::PluginHost;
 use n00n_providers::Message;
 use n00n_providers::model::Model;
+use n00n_runs::{ProjectKey, RunService, RunStore, RunStoreError};
 use n00n_storage::StateDir;
 use n00n_storage::id::n00nId;
 use n00n_storage::sessions::RetentionBudget;
@@ -24,11 +25,13 @@ use crate::setup;
 
 const CONFIG_FALLBACK_WARNING: &str = "config reload failed, using previous config";
 const MODEL_FALLBACK_WARNING: &str = "model resolution failed, keeping previous model";
+const RUN_STORE_DISABLED_WARNING: &str = "background runs disabled: could not open the run store";
 
 /// One generation of the app: everything torn down and rebuilt on `/reload`.
 /// Dropping it joins the Lua thread via `PluginHost::drop`.
 struct Stack {
     plugin_host: PluginHost,
+    run_service: Option<Arc<RunService>>,
     config: Config,
     commands: Vec<CustomCommand>,
     model: Model,
@@ -202,18 +205,22 @@ fn build_stack(
     cli: &Cli,
     cwd: &Path,
     storage: &StateDir,
+    run_service: Option<Arc<RunService>>,
     fallback: Option<(Config, Model)>,
 ) -> Result<(Stack, Vec<String>)> {
     let mut warnings = Vec::new();
 
-    let mut plugin_host = if cli.plugin_flags.no_plugins {
-        PluginHost::disabled()
-    } else {
-        PluginHost::with_jit(
-            Arc::clone(ToolRegistry::global_arc()),
-            !cli.plugin_flags.no_jit,
-        )
-        .context("initialize lua plugin host")?
+    let registry = Arc::clone(ToolRegistry::global_arc());
+    let jit = !cli.plugin_flags.no_jit;
+    let mut plugin_host = match (&run_service, cli.plugin_flags.no_plugins) {
+        (_, true) => PluginHost::disabled(),
+        (Some(service), false) => {
+            PluginHost::with_jit_and_run_service(registry, jit, Arc::clone(service))
+                .context("initialize lua plugin host")?
+        }
+        (None, false) => {
+            PluginHost::with_jit(registry, jit).context("initialize lua plugin host")?
+        }
     };
 
     let (fallback_config, fallback_model) = fallback.unzip();
@@ -267,6 +274,7 @@ fn build_stack(
     Ok((
         Stack {
             plugin_host,
+            run_service,
             config,
             commands,
             model,
@@ -333,7 +341,18 @@ pub fn run(cli: Cli) -> Result<()> {
     load_env_files(&cwd, cli.trust_project);
     warn_stale_config_toml(&cwd);
 
-    let (stack, startup_warnings) = build_stack(&cli, &cwd, &storage, None)?;
+    // Only the interactive UI hosts background runs, and a run-store failure
+    // must not stop n00n from starting: `n00n.run.start` already reports a
+    // missing service to callers.
+    let ui_mode = !cli.is_sdk_mode() && !cli.run_flags.print;
+    let mut run_store_warnings = Vec::new();
+    let run_service = if ui_mode {
+        open_run_service(&storage, &cwd, &mut run_store_warnings)
+    } else {
+        None
+    };
+    let (stack, mut startup_warnings) = build_stack(&cli, &cwd, &storage, run_service, None)?;
+    startup_warnings.append(&mut run_store_warnings);
     let openai_options = n00n_providers::OpenAiOptions::from(&stack.config.provider);
 
     setup::init_logging(&stack.config.storage);
@@ -347,6 +366,26 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 
     run_ui_loop(&cli, stack, startup_warnings, &storage, &cwd)
+}
+
+/// Opens the project-scoped run store, or disables background runs with a
+/// startup warning when the store cannot be opened.
+fn open_run_service(
+    storage: &StateDir,
+    cwd: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<Arc<RunService>> {
+    let opened = ProjectKey::from_path(cwd)
+        .map_err(RunStoreError::from)
+        .and_then(|project_key| RunStore::open(storage, project_key));
+    match opened {
+        Ok(store) => Some(Arc::new(RunService::new(store))),
+        Err(error) => {
+            tracing::warn!(%error, "{RUN_STORE_DISABLED_WARNING}");
+            warnings.push(format!("{RUN_STORE_DISABLED_WARNING}: {error}"));
+            None
+        }
+    }
 }
 
 fn run_sdk_mode(
@@ -472,6 +511,7 @@ fn run_ui_loop(
                 focused,
                 startup_warnings: std::mem::take(&mut warnings),
                 storage: storage.clone(),
+                run_service: stack.run_service.clone(),
                 config: stack.config.agent.clone(),
                 project_trusted: stack.config.project_trusted,
                 ui_config: stack.config.ui.clone(),
@@ -489,6 +529,7 @@ fn run_ui_loop(
                 keymap_reader: stack.plugin_host.keymap_reader(),
                 hint_reader: stack.plugin_host.hint_reader(),
                 ui_action_rx: stack.plugin_host.ui_action_rx(),
+                ui_action_tx: stack.plugin_host.ui_action_tx(),
                 lua_event_handle: stack.plugin_host.event_handle(),
             },
             initial_prompt.take(),
@@ -553,7 +594,8 @@ fn handle_reload(
     let plugin_host = std::mem::replace(&mut stack.plugin_host, PluginHost::disabled());
     teardown.defer(move || drop(plugin_host));
 
-    let (new_stack, new_warnings) = build_stack(cli, cwd, storage, Some(last_good))
+    let run_service = stack.run_service.clone();
+    let (new_stack, new_warnings) = build_stack(cli, cwd, storage, run_service, Some(last_good))
         .context("reload with fallback should not fail")?;
     let tabs = if reloaded.is_empty() {
         vec![AppSession::new(&new_stack.model.spec(), &cwd_str)]
@@ -593,6 +635,10 @@ mod tests {
     use color_eyre::eyre::eyre;
     use n00n_config::RawConfig;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tempfile::TempDir;
+    use test_case::test_case;
+
+    const RUN_STORE_FILE: &str = "runs.sqlite3";
 
     /// `second_saw_first` requires both joins: `defer` joining the first
     /// closure before spawning the second, and `Drop` joining the second
@@ -683,7 +729,7 @@ mod tests {
             panic!("expected error without fallback");
         };
         assert!(err.to_string().contains("boom"));
-        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
+        assert!(warnings.is_empty(), "expected empty");
     }
 
     #[test]
@@ -722,7 +768,7 @@ mod tests {
         .unwrap();
 
         assert!(needs_login);
-        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
+        assert!(warnings.is_empty(), "expected empty");
         assert_eq!(model.tier, n00n_providers::model::ModelTier::Strong);
     }
 
@@ -741,6 +787,28 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("explicit provider unavailable"));
-        assert!(warnings.is_empty(), "expected empty, got {warnings:?}");
+        assert!(warnings.is_empty(), "expected empty");
+    }
+
+    #[test_case(true, false; "unusable store path disables background runs")]
+    #[test_case(false, true; "usable store path opens the service")]
+    fn open_run_service_degrades_to_a_startup_warning(blocked: bool, expect_service: bool) {
+        let temp = TempDir::new().expect("temporary state directory");
+        let storage = StateDir::from_path(temp.path().to_path_buf());
+        if blocked {
+            std::fs::create_dir_all(temp.path().join(RUN_STORE_FILE)).expect("blocking directory");
+        }
+        let mut warnings = Vec::new();
+
+        let service = open_run_service(&storage, temp.path(), &mut warnings);
+
+        assert_eq!(service.is_some(), expect_service);
+        assert_eq!(
+            warnings
+                .iter()
+                .any(|warning| warning.starts_with(RUN_STORE_DISABLED_WARNING)),
+            blocked,
+            "unexpected startup warnings"
+        );
     }
 }

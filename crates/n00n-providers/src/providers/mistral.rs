@@ -320,7 +320,7 @@ impl Provider for Mistral {
     }
 }
 
-fn adjust_model(model: &mut Model) {
+pub(crate) fn adjust_model(model: &mut Model) {
     if model.id.starts_with("ministral-") {
         model.supports_thinking_override = Some(false);
     }

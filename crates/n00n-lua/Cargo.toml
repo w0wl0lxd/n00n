@@ -32,6 +32,7 @@ n00n-semble = { workspace = true }
 n00n-smell = { workspace = true }
 n00n-providers = { workspace = true }
 n00n-redact = { workspace = true }
+n00n-runs = { workspace = true }
 n00n-search = { workspace = true }
 mlua = { workspace = true }
 serde = { workspace = true }

@@ -52,7 +52,7 @@ use crate::components::{
     SubmissionDispatch,
 };
 use crate::image;
-use crate::keymap::{self, KeyAction};
+use crate::keymap::{self, EffectiveKeymap, KeyAction};
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
@@ -64,6 +64,7 @@ use n00n_agent::{
 use n00n_config::UiConfig;
 use n00n_lua::{EventHandle, HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::model_registry::{model_registry, set_thinking_and_persist};
+use n00n_providers::provider::adjust_thinking_capability;
 use n00n_providers::{Effort, Message, Model, ModelPricing, System, ThinkingConfig};
 use n00n_storage::StateDir;
 use n00n_storage::input_history::InputHistory;
@@ -310,6 +311,9 @@ pub struct App {
     pub(crate) lua_event_handle: Option<EventHandle>,
     pub(crate) revision_allocator: Option<Arc<RevisionAllocator>>,
     pub(super) keymap_reader: KeymapReader,
+    /// `keymap::BINDINGS` merged with `keymap.toml`, built once per UI
+    /// generation — `/reload` picks up file edits.
+    pub(super) effective_keymap: Arc<EffectiveKeymap>,
     pub(super) hint_reader: HintReader,
     pub(crate) restore_event_tx: Option<n00n_agent::EventSender>,
     pub(super) restoring: Arc<AtomicBool>,
@@ -326,6 +330,7 @@ pub struct AppInit {
     pub mcp_config_errors: McpConfigErrors,
     pub lua_command_reader: LuaCommandReader,
     pub keymap_reader: KeymapReader,
+    pub effective_keymap: Arc<EffectiveKeymap>,
     pub hint_reader: HintReader,
     pub storage_writer: Arc<StorageWriter>,
     pub ui_config: UiConfig,
@@ -348,6 +353,7 @@ impl App {
             mcp_config_errors,
             lua_command_reader,
             keymap_reader,
+            effective_keymap,
             hint_reader,
             storage_writer,
             ui_config,
@@ -437,6 +443,7 @@ impl App {
             lua_event_handle: None,
             revision_allocator: None,
             keymap_reader,
+            effective_keymap,
             hint_reader,
             restore_event_tx: None,
             restoring: Arc::new(AtomicBool::new(false)),
@@ -493,6 +500,44 @@ impl App {
             .unwrap_or_else(|| 0);
         let next = THINKING_CYCLE[(idx + 1) % THINKING_CYCLE.len()];
         self.set_thinking(next);
+        self.flash(format!("Thinking: {next}"));
+    }
+
+    /// Cycle the remembered thinking level for `spec` (the model highlighted in
+    /// the picker, which may differ from the session model). The session
+    /// thinking is updated only when the highlighted model is the current one.
+    fn cycle_remembered_thinking(&mut self, spec: &str) {
+        let is_current = self.state.model.spec() == spec;
+        let supports = if is_current {
+            self.state.model.supports_thinking()
+        } else {
+            Model::from_spec(spec).is_ok_and(|mut m| {
+                adjust_thinking_capability(&mut m);
+                m.supports_thinking()
+            })
+        };
+        if !supports {
+            self.flash("Thinking requires a model that supports it".into());
+            return;
+        }
+        let current: ThinkingConfig = if is_current {
+            self.state.thinking
+        } else {
+            model_registry()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remembered_thinking(spec)
+                .map_or(ThinkingConfig::Off, Into::into)
+        };
+        let idx = THINKING_CYCLE
+            .iter()
+            .position(|&c| c == current)
+            .unwrap_or_else(|| 0);
+        let next = THINKING_CYCLE[(idx + 1) % THINKING_CYCLE.len()];
+        set_thinking_and_persist(spec.to_owned(), next.into(), &self.storage);
+        if is_current {
+            self.state.thinking = next;
+        }
         self.flash(format!("Thinking: {next}"));
     }
 
@@ -895,8 +940,8 @@ impl App {
                 ModelPickerAction::UnassignTier(spec, tier) => {
                     vec![Action::UnassignTier(spec, tier)]
                 }
-                ModelPickerAction::CycleThinking => {
-                    self.cycle_thinking();
+                ModelPickerAction::CycleThinking(spec) => {
+                    self.cycle_remembered_thinking(&spec);
                     vec![]
                 }
                 ModelPickerAction::Close => {
@@ -964,6 +1009,8 @@ impl App {
             return actions;
         }
 
+        let stack = self.context_stack();
+
         // The plan form and the approved plan are core UI, so a plugin
         // keymap override of the same chord must not make them unreachable.
         if self.state.mode == Mode::Plan
@@ -980,13 +1027,13 @@ impl App {
             return vec![Action::OpenEditor(path.to_path_buf())];
         }
 
-        if !(self.status == Status::Streaming && is_streaming_stop_key(key))
+        if !(self.status == Status::Streaming && self.is_streaming_stop_key(&stack, key))
             && self.dispatch_override(key)
         {
             return vec![];
         }
 
-        if let Some(action) = keymap::resolve(&self.context_stack(), key) {
+        if let Some(action) = self.effective_keymap.resolve(&stack, key) {
             return self.perform(action, key);
         }
 
@@ -1013,6 +1060,19 @@ impl App {
             _ => {}
         }
         vec![]
+    }
+
+    /// While streaming, keys that still resolve to a quit/cancel action
+    /// bypass Lua plugin binds so a plugin can't eat the interrupt. Bare
+    /// Esc keeps the same privilege regardless of what it resolves to.
+    /// Rebound quit/cancel keys keep this protection — the check reads the
+    /// effective map, not the compiled-in defaults.
+    fn is_streaming_stop_key(&self, stack: &[KeybindContext], key: KeyEvent) -> bool {
+        key.code == KeyCode::Esc
+            || matches!(
+                self.effective_keymap.resolve(stack, key),
+                Some(KeyAction::QuitOrCancel | KeyAction::CancelAgent)
+            )
     }
 
     fn dispatch_override(&self, key: KeyEvent) -> bool {
@@ -1995,7 +2055,9 @@ impl App {
                 ChatEventResult::AuthRequired
                 | ChatEventResult::SubagentInputRequired
                 | ChatEventResult::PermissionRequest { .. }
-                | ChatEventResult::QueueItemConsumed { .. } => unreachable!(),
+                | ChatEventResult::QueueItemConsumed { .. } => {
+                    tracing::warn!("unexpected ChatEventResult in turn error handler");
+                }
                 ChatEventResult::Continue => {}
             }
         }
@@ -2205,6 +2267,7 @@ impl App {
             text: display_text.clone(),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         });
         input.prompt = Some(Box::new(prompt_ref));
 
@@ -2218,6 +2281,7 @@ impl App {
                     text: display_text,
                     images: Vec::new(),
                     control: false,
+                    run_delivery: None,
                 },
                 input,
                 true,
@@ -2258,6 +2322,7 @@ impl App {
             text: cmd.render(args),
             images: Vec::new(),
             control: false,
+            run_delivery: None,
         })
     }
 
@@ -2485,6 +2550,7 @@ impl App {
             text,
             images: vec![],
             control: false,
+            run_delivery: None,
         };
 
         if clear_context {
@@ -2498,10 +2564,6 @@ impl App {
             self.start_from_queue(&msg)
         }
     }
-}
-
-fn is_streaming_stop_key(key: KeyEvent) -> bool {
-    key::QUIT.matches(key) || key.code == KeyCode::Esc
 }
 
 fn sync_search_highlight(modal: &SearchModal, chat: &mut Chat) {

@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 pub use n00n_storage::sessions::Effort;
 pub use n00n_storage::sessions::{BodyOverride, EffortDialectId, ThinkingFieldConfig, ToggleEntry};
@@ -1300,7 +1301,7 @@ pub struct HostedToolSearch {
     pub tools: Vec<DeferredToolDefinition>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
     /// Raw user preference, reconciled by [`RequestOptions::clamped`] before use.
@@ -1311,7 +1312,11 @@ pub struct RequestOptions {
     pub message_cache_breakpoints: usize,
     pub openai_prompt_cache_mode: Option<OpenAiPromptCacheMode>,
     pub protect_history_replay: bool,
+    /// Snapshot taken when the request was built. Use
+    /// [`RequestOptions::history_replay_allowed`] instead of reading this directly.
     pub allow_history_replay: bool,
+    /// Overrides `allow_history_replay` with a live re-check, if set.
+    pub allow_history_replay_live: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// Optional safety identifier for the request (max 64 chars for `OpenAI`).
     pub safety_identifier: Option<String>,
     /// Whether moderation is enabled for this request.
@@ -1326,6 +1331,10 @@ pub struct RequestOptions {
     /// present and this flag is set.
     pub idempotency_supported: bool,
     pub hosted_tool_search: Option<HostedToolSearch>,
+    /// Optional cooperative cancellation flag. When set, long-running stream
+    /// reads abort early with `Cancelled` instead of waiting for the next
+    /// timeout. The flag is set by the caller when user cancels.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
     /// Stable seed for the prompt-cache shard. Subagent sessions pass the root
     /// session id so sibling requests share one warm cache bucket.
     pub cache_shard_key: Option<String>,
@@ -1340,15 +1349,35 @@ impl Default for RequestOptions {
             openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         }
     }
 }
+
+impl PartialEq for RequestOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.thinking == other.thinking
+            && self.fast == other.fast
+            && self.message_cache_breakpoints == other.message_cache_breakpoints
+            && self.openai_prompt_cache_mode == other.openai_prompt_cache_mode
+            && self.protect_history_replay == other.protect_history_replay
+            && self.allow_history_replay == other.allow_history_replay
+            && self.safety_identifier == other.safety_identifier
+            && self.moderation == other.moderation
+            && self.idempotency_key == other.idempotency_key
+            && self.idempotency_supported == other.idempotency_supported
+            && self.hosted_tool_search == other.hosted_tool_search
+    }
+}
+
+impl Eq for RequestOptions {}
 
 impl RequestOptions {
     /// Generates a client-side idempotency key for this request if one is not
@@ -1386,13 +1415,48 @@ impl RequestOptions {
             openai_prompt_cache_mode: self.openai_prompt_cache_mode,
             protect_history_replay: self.protect_history_replay,
             allow_history_replay: self.allow_history_replay,
+            allow_history_replay_live: self.allow_history_replay_live,
             safety_identifier: self.safety_identifier,
             moderation: self.moderation,
             idempotency_key: self.idempotency_key,
             idempotency_supported: self.idempotency_supported,
             hosted_tool_search: self.hosted_tool_search,
+            cancel_flag: self.cancel_flag,
             cache_shard_key: self.cache_shard_key,
         }
+    }
+
+    /// Resolves whether a full-history replay is allowed right now: the live
+    /// callback if one is set, otherwise the `allow_history_replay` snapshot.
+    #[must_use]
+    pub fn history_replay_allowed(&self) -> bool {
+        self.allow_history_replay_live
+            .as_ref()
+            .map_or(self.allow_history_replay, |check| check())
+    }
+}
+
+impl std::fmt::Debug for RequestOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestOptions")
+            .field("thinking", &self.thinking)
+            .field("fast", &self.fast)
+            .field("message_cache_breakpoints", &self.message_cache_breakpoints)
+            .field("openai_prompt_cache_mode", &self.openai_prompt_cache_mode)
+            .field("protect_history_replay", &self.protect_history_replay)
+            .field("allow_history_replay", &self.allow_history_replay)
+            .field(
+                "allow_history_replay_live",
+                &self.allow_history_replay_live.is_some(),
+            )
+            .field("safety_identifier", &self.safety_identifier)
+            .field("moderation", &self.moderation)
+            .field("idempotency_key", &self.idempotency_key)
+            .field("idempotency_supported", &self.idempotency_supported)
+            .field("hosted_tool_search", &self.hosted_tool_search)
+            .field("cache_shard_key", &self.cache_shard_key)
+            .field("cancel_flag", &self.cancel_flag)
+            .finish()
     }
 }
 
@@ -1907,11 +1971,13 @@ mod tests {
             openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
@@ -1927,14 +1993,70 @@ mod tests {
             openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: None,
             moderation: false,
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         };
         assert!(!opts.clamped(&model).fast);
+    }
+
+    #[test]
+    fn request_options_clamped_preserves_cache_shard_key() {
+        let model = clamp_test_model(crate::provider::ProviderKind::Anthropic);
+        let opts = RequestOptions {
+            thinking: ThinkingConfig::Off,
+            fast: false,
+            message_cache_breakpoints: 2,
+            openai_prompt_cache_mode: None,
+            protect_history_replay: false,
+            allow_history_replay: false,
+            allow_history_replay_live: None,
+            safety_identifier: None,
+            moderation: false,
+            idempotency_key: None,
+            idempotency_supported: false,
+            hosted_tool_search: None,
+            cache_shard_key: Some("root-session-id".to_string()),
+            cancel_flag: None,
+        };
+        assert_eq!(
+            opts.clamped(&model).cache_shard_key.as_deref(),
+            Some("root-session-id")
+        );
+    }
+
+    #[test_case(Some("shard-1".to_string()) ; "present")]
+    #[test_case(None ; "absent")]
+    fn request_options_debug_includes_cache_shard_key(cache_shard_key: Option<String>) {
+        let opts = RequestOptions {
+            cache_shard_key: cache_shard_key.clone(),
+            ..RequestOptions::default()
+        };
+        let debug = format!("{opts:?}");
+        assert!(
+            debug.contains("cache_shard_key"),
+            "Debug output must list cache_shard_key: {debug}"
+        );
+        match cache_shard_key {
+            Some(key) => assert!(debug.contains(&key), "Debug output missing value: {debug}"),
+            None => assert!(debug.contains("cache_shard_key: None"), "{debug}"),
+        }
+    }
+
+    #[test_case(None, "cancel_flag: None" ; "absent")]
+    #[test_case(Some(true), "cancel_flag: Some(true)" ; "set")]
+    fn request_options_debug_includes_cancel_flag(flag: Option<bool>, expected: &str) {
+        let opts = RequestOptions {
+            cancel_flag: flag.map(|value| Arc::new(AtomicBool::new(value))),
+            ..RequestOptions::default()
+        };
+        let debug = format!("{opts:?}");
+        assert!(debug.contains(expected), "{debug}");
     }
 
     #[test_case("",         ThinkingConfig::Off,      Ok(ThinkingConfig::Adaptive)  ; "toggle_on")]
@@ -2058,11 +2180,13 @@ mod tests {
             openai_prompt_cache_mode: None,
             protect_history_replay: false,
             allow_history_replay: false,
+            allow_history_replay_live: None,
             safety_identifier: Some("test-id".to_string()),
             moderation: true,
             idempotency_key: None,
             idempotency_supported: false,
             hosted_tool_search: None,
+            cancel_flag: None,
             cache_shard_key: None,
         };
         let clamped = opts.clamped(&model);

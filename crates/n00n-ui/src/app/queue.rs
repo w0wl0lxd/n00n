@@ -81,6 +81,7 @@ impl MessageQueue {
         // Atomic check-and-push: hold the lock across both operations to prevent race
         let image_count = dispatch.input.images.len();
         let text = dispatch.input.message.clone();
+        let run_delivery = dispatch.input.run_delivery.clone();
         shared.push_front_if_missing(QueueItem::Message {
             text,
             image_count,
@@ -91,6 +92,7 @@ impl MessageQueue {
             ready: Arc::new(AtomicBool::new(false)),
             displayed: false,
             delivery: Delivery::TurnEnd,
+            run_delivery,
         });
     }
 
@@ -113,6 +115,7 @@ impl MessageQueue {
             text,
             input,
             delivery,
+            run_delivery,
             ..
         } = &item
         else {
@@ -123,6 +126,7 @@ impl MessageQueue {
             text: text.clone(),
             images: input.images.clone(),
             control: input.control,
+            run_delivery: run_delivery.clone(),
         };
         let delivery = *delivery;
         self.focus = None;
@@ -206,7 +210,13 @@ impl MessageQueue {
         )
     }
 
-    pub(crate) fn queued_inputs(&self) -> Vec<(n00n_agent::AgentInput, Delivery)> {
+    pub(crate) fn queued_inputs(
+        &self,
+    ) -> Vec<(
+        n00n_agent::AgentInput,
+        Delivery,
+        Option<n00n_agent::ControlDeliveryMetadata>,
+    )> {
         self.shared.as_ref().map_or(
             vec![],
             super::super::agent::shared_queue::QueueSender::queued_inputs,
@@ -353,6 +363,7 @@ impl App {
             ready: Arc::new(AtomicBool::new(true)),
             displayed: false,
             delivery,
+            run_delivery: msg.run_delivery,
         });
         true
     }
@@ -384,6 +395,7 @@ impl App {
             ready: Arc::new(AtomicBool::new(true)),
             displayed: false,
             delivery,
+            run_delivery: msg.run_delivery,
         };
         if self.queue.editing().is_some() {
             self.queue.replace_editing(item);
@@ -459,6 +471,7 @@ impl App {
             ready: Arc::new(AtomicBool::new(false)),
             displayed: paint_required,
             delivery: Delivery::TurnEnd,
+            run_delivery: msg.run_delivery.clone(),
         });
         if paint_required {
             self.pending_submission = Some(super::PendingSubmission {
@@ -511,6 +524,7 @@ mod tests {
                 control: false,
                 prompt: None,
                 plan_path: None,
+                run_delivery: None,
             },
             run_id: 0,
             submission_id: 0,
@@ -518,6 +532,7 @@ mod tests {
             ready: Arc::new(AtomicBool::new(true)),
             displayed: true,
             delivery: Delivery::TurnEnd,
+            run_delivery: None,
         }
     }
 

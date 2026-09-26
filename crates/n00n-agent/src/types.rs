@@ -682,7 +682,7 @@ impl ToolOutput {
                 }
                 let max_line_bytes = max_bytes.clamp(1, 4096);
                 for line in &mut lines {
-                    *line = crate::tools::truncate_output(line, 1, max_line_bytes);
+                    *line = crate::tools::truncate_output_quiet(line, 1, max_line_bytes);
                 }
                 Self::ReadCode {
                     path,
@@ -719,8 +719,21 @@ impl ToolOutput {
                         "truncated tool output items"
                     );
                 }
+                let mut any_item_truncated = false;
                 for item in &mut items {
-                    item.content = crate::tools::truncate_output(&item.content, 1, max_bytes);
+                    let shrunk = crate::tools::truncate_output_quiet(&item.content, 1, max_bytes);
+                    if shrunk.len() != item.content.len() {
+                        any_item_truncated = true;
+                    }
+                    item.content = shrunk;
+                }
+                if any_item_truncated {
+                    warn!(
+                        tool = "TodoList",
+                        path = "",
+                        max_bytes,
+                        "truncated todo item content; as_text() is unaffected"
+                    );
                 }
                 Self::TodoList(items)
             }
@@ -742,8 +755,21 @@ impl ToolOutput {
                         "truncated tool output lines"
                     );
                 }
+                let mut any_line_truncated = false;
                 for line in &mut lines {
-                    *line = crate::tools::truncate_output(line, 1, max_bytes);
+                    let shrunk = crate::tools::truncate_output_quiet(line, 1, max_bytes);
+                    if shrunk.len() != line.len() {
+                        any_line_truncated = true;
+                    }
+                    *line = shrunk;
+                }
+                if any_line_truncated {
+                    warn!(
+                        tool = "WriteCode",
+                        path = %path,
+                        max_bytes,
+                        "truncated write-code line content; as_text() is unaffected"
+                    );
                 }
                 Self::WriteCode {
                     path,
@@ -769,7 +795,8 @@ impl ToolOutput {
                 telemetry,
             },
         };
-        let truncated_bytes = bounded.as_text().len();
+        let text = bounded.as_text();
+        let truncated_bytes = text.len();
         if truncated_bytes != original_bytes {
             warn!(
                 tool = original_tool,
@@ -781,7 +808,6 @@ impl ToolOutput {
                 "truncated tool output"
             );
         }
-        let text = bounded.as_text();
         let limited = crate::tools::truncate_output(&text, max_lines, max_bytes);
         if limited == text {
             bounded
@@ -1085,6 +1111,13 @@ pub fn tool_results(results: Vec<ToolDoneEvent>) -> Message {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ControlDeliveryMetadata {
+    pub delivery_id: String,
+    pub child_run_id: String,
+    pub source_revision: u64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -1115,6 +1148,8 @@ pub enum AgentEvent {
         image_count: usize,
         images: Vec<ImageSource>,
         control: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_delivery: Option<ControlDeliveryMetadata>,
     },
     QueueDrained {
         generation: u64,
@@ -1215,24 +1250,18 @@ impl SharedBuf {
     }
 
     pub fn set_click(&self, f: Arc<dyn Any + Send + Sync>) {
-        *self
-            .click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
+        *self.click.lock().unwrap_or_else(|_| std::process::abort()) = Some(f);
     }
 
     pub fn click(&self) -> Option<Arc<dyn Any + Send + Sync>> {
         self.click
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .clone()
     }
 
     pub fn clear_click(&self) {
-        *self
-            .click
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.click.lock().unwrap_or_else(|_| std::process::abort()) = None;
     }
 
     /// Fires synchronously after every `append`/`set_lines`, on the
@@ -1243,7 +1272,7 @@ impl SharedBuf {
         *self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
+            .unwrap_or_else(|_| std::process::abort()) = Some(Arc::new(f));
     }
 
     /// A watcher keeps everything it captured alive for as long as it is
@@ -1252,7 +1281,7 @@ impl SharedBuf {
         *self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(|_| std::process::abort()) = None;
     }
 
     fn notify_change(&self) {
@@ -1262,7 +1291,7 @@ impl SharedBuf {
         let cb = self
             .on_change
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .clone();
         if let Some(cb) = cb {
             cb();
@@ -1274,7 +1303,7 @@ impl SharedBuf {
         let mut guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Arc::make_mut(&mut guard).push(line);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -1285,7 +1314,7 @@ impl SharedBuf {
         let mut guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         *guard = Arc::new(lines);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -1295,7 +1324,7 @@ impl SharedBuf {
     pub fn len(&self) -> usize {
         self.committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|_| std::process::abort())
             .len()
     }
 
@@ -1307,7 +1336,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Arc::clone(&guard)
     }
 
@@ -1318,7 +1347,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         Some(Arc::clone(&guard))
     }
 
@@ -1327,7 +1356,7 @@ impl SharedBuf {
         let guard = self
             .committed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(|_| std::process::abort());
         BufferSnapshot::from_arc(Arc::clone(&guard))
     }
 }
@@ -1490,6 +1519,22 @@ impl EventSender {
             .map_err(|_| AgentError::Channel)
     }
 
+    /// Waits for channel capacity and sends an agent event.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError` if the channel is closed.
+    pub async fn send_wait(&self, event: impl Into<AgentEvent>) -> Result<(), AgentError> {
+        self.tx
+            .send_async(Envelope {
+                event: event.into(),
+                subagent: None,
+                run_id: self.run_id,
+            })
+            .await
+            .map_err(|_| AgentError::Channel)
+    }
+
     /// Sends an envelope directly.
     ///
     /// # Errors
@@ -1500,11 +1545,13 @@ impl EventSender {
     }
 
     pub fn try_send(&self, event: impl Into<AgentEvent>) {
-        let _ = self.tx.try_send(Envelope {
+        if let Err(error) = self.tx.try_send(Envelope {
             event: event.into(),
             subagent: None,
             run_id: self.run_id,
-        });
+        }) {
+            warn!(%error, run_id = self.run_id, "EventSender try_send failed");
+        }
     }
 
     #[must_use]
@@ -1531,6 +1578,36 @@ pub struct Envelope {
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    #[test]
+    fn send_wait_delivers_lifecycle_event_after_backpressure() {
+        smol::block_on(async {
+            let (tx, rx) = flume::bounded(1);
+            let sender = EventSender::new(tx, 7);
+            sender
+                .send(AgentEvent::TextDelta {
+                    text: "full".into(),
+                })
+                .expect("fill channel");
+
+            let waiting_sender = sender.clone();
+            let pending = smol::spawn(async move {
+                waiting_sender
+                    .send_wait(AgentEvent::QueueDrained { generation: 9 })
+                    .await
+            });
+            let first = rx.recv_async().await.expect("first event");
+            pending.await.expect("reliable send");
+            let second = rx.recv_async().await.expect("lifecycle event");
+
+            assert!(matches!(first.event, AgentEvent::TextDelta { .. }));
+            assert!(matches!(
+                second.event,
+                AgentEvent::QueueDrained { generation: 9 }
+            ));
+            assert_eq!(second.run_id, 7);
+        });
+    }
 
     #[test_case(ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
     #[test_case(ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
@@ -1601,6 +1678,79 @@ mod tests {
         });
         let bounded = output.bounded(10, 100);
         assert!(bounded.as_text().contains("Instructions from: AGENTS.md"));
+    }
+
+    /// Records event messages so a `warn!` call can be asserted without a
+    /// `tracing-subscriber` dev-dependency.
+    struct EventCapture {
+        messages: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct MessageVisitor(String);
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl tracing::Subscriber for EventCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            let Ok(mut messages) = self.messages.lock() else {
+                return;
+            };
+            messages.push(visitor.0);
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    #[test_case("TodoList" ; "todo_list_item_truncation_warns_even_though_as_text_is_ok")]
+    #[test_case("WriteCode" ; "write_code_line_truncation_warns_even_though_as_text_omits_lines")]
+    fn bounded_output_warns_on_quiet_item_truncation(variant: &str) {
+        let output = match variant {
+            "TodoList" => ToolOutput::TodoList(vec![TodoItem {
+                content: "x".repeat(500),
+                status: TodoStatus::InProgress,
+                priority: TodoPriority::default(),
+            }]),
+            "WriteCode" => ToolOutput::WriteCode {
+                path: "a.rs".into(),
+                byte_count: 500,
+                lines: vec!["x".repeat(500)],
+            },
+            other => panic!("unexpected variant {other}"),
+        };
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = EventCapture {
+            messages: Arc::clone(&messages),
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            let _bounded = output.bounded(10, 64);
+        });
+        let captured = messages.lock().expect("capture mutex must not be poisoned");
+        assert!(
+            captured.iter().any(|message| message.contains("truncated")),
+            "expected a truncation warning, got {captured:?}"
+        );
     }
 
     #[test]
@@ -1970,18 +2120,6 @@ mod tests {
         assert_eq!(snap.len(), 2, "held Arc must not see new appends");
         let snap2 = buf.read_if_dirty().unwrap();
         assert_eq!(snap2.len(), 3);
-    }
-
-    #[test]
-    fn shared_buf_poisoned_mutex_recovery() {
-        let buf = Arc::new(SharedBuf::new());
-        let buf2 = Arc::clone(&buf);
-        let h = std::thread::spawn(move || {
-            let _guard = buf2.committed.lock().unwrap();
-            panic!("intentional poison");
-        });
-        let _ = h.join();
-        buf.append(SnapshotLine { spans: vec![] });
     }
 
     #[test]

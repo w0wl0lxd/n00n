@@ -125,6 +125,32 @@ async fn delete(
     .await
 }
 
+/// Deletes idle background sessions in the caller's lineage, including
+/// sessions with stale active lifecycle state. When `id` is nil, all idle
+/// descendants are reaped.
+///
+/// @param id string? Idle agent id, or nil for all idle descendants.
+/// @return (integer|nil, string|nil) Number of sessions reaped, or nil and an error.
+#[lua_fn]
+async fn reap(
+    lua: Lua,
+    #[ctx] tx: Option<flume::Sender<UiAction>>,
+    id: Option<String>,
+) -> LuaResult<Pair> {
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
+    roundtrip(lua, tx, SessionRequest::Reap { id, caller_id }).await
+}
+
+/// Cancels and permanently deletes an agent session and all descendants.
+///
+/// @param id string Agent id to kill.
+/// @return (integer|nil, string|nil) Number of sessions killed, or nil and an error.
+#[lua_fn]
+async fn kill(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>, id: String) -> LuaResult<Pair> {
+    let caller_id = active_session_identity(&lua).map(|identity| identity.session_id().clone());
+    roundtrip(lua, tx, SessionRequest::Kill { id, caller_id }).await
+}
+
 /// Starts a new session in the current project.
 ///
 /// @param opts table? Optional fields: prompt (string) first user message
@@ -189,6 +215,8 @@ async fn new(
         SessionRequest::New {
             prompt,
             focus,
+            requested_id: None,
+            managed_run_id: None,
             parent_id,
             caller_id,
             bootstrap,
@@ -291,7 +319,7 @@ lua_table! {
     /// the pair `(value, err)`. Without an interactive UI attached, every
     /// call returns `nil, "no interactive UI attached"`.
     "n00n.session" => pub(crate) fn create_session_table(tx: Option<flume::Sender<UiAction>>),
-    DOCS [list(tx), live(tx), status(tx), current(tx), focus(tx), delete(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
+    DOCS [list(tx), live(tx), status(tx), current(tx), focus(tx), delete(tx), reap(tx), kill(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
 }
 
 #[cfg(test)]
@@ -319,6 +347,7 @@ mod tests {
         let _scope = TaskScope::new(
             &lua,
             TaskCell::new(
+                &lua,
                 CancelToken::none(),
                 None,
                 None,
@@ -369,9 +398,43 @@ mod tests {
             assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
             assert!(!trusted_ui_control);
             reply_tx.send(Ok(json!(true))).unwrap();
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::Reap {
+                        id,
+                        caller_id: actual_caller_id,
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected reap request");
+            };
+            assert_eq!(id.as_deref(), Some("target"));
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!(1))).unwrap();
+            let Ok(UiAction::Session {
+                req:
+                    SessionRequest::Kill {
+                        id,
+                        caller_id: actual_caller_id,
+                    },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected kill request");
+            };
+            assert_eq!(id, "target");
+            assert_eq!(actual_caller_id.as_ref(), Some(&expected_caller_id));
+            reply_tx.send(Ok(json!(1))).unwrap();
         });
 
-        let (child_id, prompt_status, deleted): (String, String, bool) = smol::block_on(
+        let (child_id, prompt_status, deleted, reaped, killed): (
+            String,
+            String,
+            bool,
+            usize,
+            usize,
+        ) = smol::block_on(
             lua.load(
                 r#"
                 local child, new_err = session.new({ caller_id = "spoof" })
@@ -380,7 +443,11 @@ mod tests {
                 if prompt_err then error(prompt_err) end
                 local deleted, delete_err = session.delete("target")
                 if delete_err then error(delete_err) end
-                return child, status, deleted
+                local reaped, reap_err = session.reap("target")
+                if reap_err then error(reap_err) end
+                local killed, kill_err = session.kill("target")
+                if kill_err then error(kill_err) end
+                return child, status, deleted, reaped, killed
                 "#,
             )
             .eval_async(),
@@ -390,6 +457,8 @@ mod tests {
         assert_eq!(child_id, "child");
         assert_eq!(prompt_status, "queued");
         assert!(deleted);
+        assert_eq!(reaped, 1);
+        assert_eq!(killed, 1);
     }
 
     #[test]
@@ -400,6 +469,7 @@ mod tests {
         let _scope = TaskScope::new(
             &lua,
             TaskCell::new(
+                &lua,
                 CancelToken::none(),
                 None,
                 None,
@@ -413,6 +483,8 @@ mod tests {
                     SessionRequest::New {
                         prompt,
                         focus,
+                        requested_id,
+                        managed_run_id,
                         parent_id,
                         caller_id,
                         bootstrap: Some(bootstrap),
@@ -424,6 +496,8 @@ mod tests {
             };
             assert_eq!(prompt, None);
             assert!(!focus);
+            assert_eq!(requested_id, None);
+            assert_eq!(managed_run_id, None);
             assert_eq!(parent_id, None);
             assert_eq!(caller_id.as_ref(), Some(&expected_caller_id));
             assert_eq!(bootstrap.tool, "task");
