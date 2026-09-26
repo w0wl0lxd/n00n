@@ -227,6 +227,12 @@ case("sanitize_git_keeps_an_unterminated_heredoc_body_as_data", function()
   eq(sanitized("cat <<EOF\ngit diff"), "cat <<EOF\ngit diff")
 end)
 
+case("sanitize_git_ends_comments_at_newline", function()
+  eq(sanitized("git status # don't\ngit diff"), sanitized("git status # don't") .. "\n" .. sanitized("git diff"))
+  eq(sanitized("true # see <<EOF\ngit diff"), "true # see <<EOF\n" .. sanitized("git diff"))
+  eq(sanitized("echo a#b; git diff"), "echo a#b; " .. sanitized("git diff"))
+end)
+
 case("sanitize_git_keeps_semicolon_separators", function()
   local sanitized = command_guard.sanitize_git_command("git status; rm x")
   has(sanitized, "status; rm x")

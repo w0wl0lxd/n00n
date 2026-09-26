@@ -348,6 +348,9 @@ end
 local HEREDOC_OPERATOR = "<<"
 local HERE_STRING_OPERATOR = "<<<"
 local HEREDOC_WORD_END = "[%s;&|<>()]"
+-- An unquoted `#` starts a comment only at the start of a word.
+local COMMENT_START = "#"
+local COMMENT_WORD_BOUNDARY = "[%s;&|()]"
 
 -- Read the heredoc delimiter word that starts at or after `index`. Returns
 -- the quote-removed delimiter and the index of the word's last byte.
@@ -401,7 +404,8 @@ end
 -- to the input byte for byte. Heredoc bodies, from the newline after the
 -- `<<` operator through the closing delimiter line, are `verbatim` parts:
 -- their lines are data, not commands. The command that owns the heredoc and
--- the commands after its delimiter are still split normally.
+-- the commands after its delimiter are still split normally. Comments run to
+-- the next newline, so quotes, separators and `<<` inside them are ignored.
 function M.split_command_segments(command)
   local parts = {}
   local start = 1
@@ -425,6 +429,9 @@ function M.split_command_segments(command)
       quote = char
     elseif char == "\\" then
       index = index + 1
+    elseif char == COMMENT_START and (index == 1 or command:sub(index - 1, index - 1):match(COMMENT_WORD_BOUNDARY)) then
+      local newline = command:find("\n", index, true)
+      index = (newline or #command + 1) - 1
     elseif command:sub(index, index + #HERE_STRING_OPERATOR - 1) == HERE_STRING_OPERATOR then
       index = index + #HERE_STRING_OPERATOR - 1
     elseif command:sub(index, index + #HEREDOC_OPERATOR - 1) == HEREDOC_OPERATOR then
