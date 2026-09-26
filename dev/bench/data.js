@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790384031527,
+  "lastUpdate": 1790408877882,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -27197,6 +27197,112 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 153085,
             "range": "± 24947",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "06f85328497d9ddb49271fe988f1bad3891fe601",
+          "message": "Merge pull request #509 from w0wl0lxd/integrate/all-work\n\nchore: integrate remaining branches, dep refresh, and PR 504 review fixes",
+          "timestamp": "2026-09-26T00:38:48Z",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/06f85328497d9ddb49271fe988f1bad3891fe601"
+        },
+        "date": 1790408875892,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5025430,
+            "range": "± 64325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1896832,
+            "range": "± 15193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1902076,
+            "range": "± 4012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5925224,
+            "range": "± 16242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3002044,
+            "range": "± 9784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2934466,
+            "range": "± 8907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 429483,
+            "range": "± 4230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130198,
+            "range": "± 868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130152,
+            "range": "± 118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 810945,
+            "range": "± 2850",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 499229,
+            "range": "± 10909",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 501398,
+            "range": "± 7165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 42163,
+            "range": "± 3001",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 142678,
+            "range": "± 5120",
             "unit": "ns/iter"
           }
         ]
