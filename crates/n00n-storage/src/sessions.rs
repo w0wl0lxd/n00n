@@ -1445,7 +1445,7 @@ impl SessionMeta {
         &mut self,
         delivery: StoredControlDelivery,
     ) -> Result<(), SessionError> {
-        if self.contains_run_delivery(&delivery.delivery_id) {
+        if self.has_consumed_run_delivery(&delivery.delivery_id) {
             return Ok(());
         }
         if self.consumed_run_deliveries.len() >= MAX_CONTROL_DELIVERY_RECORDS {
@@ -5088,7 +5088,15 @@ fn scan_legacy_metadata_at(
     path: &Path,
     project_cwd: &str,
 ) -> Result<Option<LegacySessionMetadata>, SessionError> {
-    let mut reader = BoundedZstdLines::open(path, 0, DecodeLimits::SCAN)?;
+    scan_legacy_metadata_with_limits(path, project_cwd, DecodeLimits::SCAN)
+}
+
+fn scan_legacy_metadata_with_limits(
+    path: &Path,
+    project_cwd: &str,
+    limits: DecodeLimits,
+) -> Result<Option<LegacySessionMetadata>, SessionError> {
+    let mut reader = BoundedZstdLines::open(path, 0, limits)?;
     let mut metadata: Option<LegacySessionMetadata> = None;
     loop {
         let line = match reader.next(true) {
@@ -5096,6 +5104,13 @@ fn scan_legacy_metadata_at(
             Ok(DecodedLine::Oversized) => continue,
             Ok(DecodedLine::Line(line)) => line,
             Err(LineReadError::Io(_)) if metadata.is_some() => break,
+            Err(LineReadError::BudgetExceeded) if metadata.is_some() => {
+                warn!(
+                    limit = limits.decoded_bytes,
+                    "legacy session scan reached the decoded-byte limit; keeping metadata read so far"
+                );
+                break;
+            }
             Err(error) => return Err(reader.limit_error(error)),
         };
         if line.is_empty() {
@@ -5747,8 +5762,9 @@ mod tests {
     };
     use super::{Effort, StoredReasoningContext, StoredReasoningMode, StoredThinking};
     use super::{
-        MAX_SESSION_RECORD_BYTES, StoredSessionStateSnapshot, meta_record_bytes,
-        scan_legacy_child_sessions_in, scan_legacy_metadata_at,
+        MAX_SCAN_RECORD_BYTES, MAX_SESSION_RECORD_BYTES, MAX_ZSTD_WINDOW_LOG,
+        StoredSessionStateSnapshot, meta_record_bytes, scan_legacy_child_sessions_in,
+        scan_legacy_metadata_at, scan_legacy_metadata_with_limits,
     };
     use super::{
         MAX_TRANSCRIPT_COMPACTION_DEPTH, TRANSCRIPT_COMPACTION_END_RECORD_TYPE,
@@ -10153,6 +10169,8 @@ mod tests {
 
     const PROJECT_CWD: &str = "/project";
     const UNSUPPORTED_LOG_VERSION: u32 = 999;
+    const LEGACY_PAD_BYTES: usize = 1_024;
+    const LEGACY_BUDGET_SLACK: usize = 16;
 
     fn consumed_delivery(delivery_id: &str) -> StoredControlDelivery {
         StoredControlDelivery {
@@ -10211,6 +10229,32 @@ mod tests {
         assert!(meta.has_consumed_run_delivery("delivery-9"));
         assert!(meta.has_consumed_run_delivery("delivery-1"));
         assert!(meta.has_consumed_run_delivery("overflow"));
+    }
+
+    #[test]
+    fn consumed_delivery_is_recorded_while_a_stale_queued_copy_remains() {
+        let mut meta = SessionMeta {
+            queued_submissions: vec![StoredQueuedMessage {
+                text: "control".to_owned(),
+                images: Vec::new(),
+                mode: None,
+                plan_path: None,
+                thinking: None,
+                fast: false,
+                workflow: false,
+                control: true,
+                delivery: StoredDelivery::default(),
+                prompt: None,
+                run_delivery: Some(consumed_delivery("delivery-1")),
+            }],
+            ..SessionMeta::default()
+        };
+
+        meta.record_consumed_run_delivery(consumed_delivery("delivery-1"))
+            .unwrap();
+
+        assert!(meta.has_consumed_run_delivery("delivery-1"));
+        assert!(meta.mark_run_delivery_acknowledged("delivery-1"));
     }
 
     #[test]
@@ -10369,6 +10413,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             [session.id]
         );
+    }
+
+    #[test_case(true ; "limit reached after the header keeps metadata")]
+    #[test_case(false ; "limit reached before the header is an error")]
+    fn legacy_metadata_scan_at_decoded_limit(header_fits: bool) {
+        let tmp = TempDir::new().unwrap();
+        let header = legacy_header(PROJECT_CWD, LOG_FORMAT_VERSION);
+        let pad = format!(
+            "{}\n",
+            serde_json::json!({"t": "pad", "x": "p".repeat(LEGACY_PAD_BYTES)})
+        );
+        let path = plant_encoded_session_file(tmp.path(), format!("{header}{pad}").as_bytes());
+        let budget = if header_fits {
+            header.len() + LEGACY_BUDGET_SLACK
+        } else {
+            header.len() / 2
+        };
+        let limits = DecodeLimits::new(MAX_SCAN_RECORD_BYTES, budget, MAX_ZSTD_WINDOW_LOG);
+
+        let scanned = scan_legacy_metadata_with_limits(&path, PROJECT_CWD, limits);
+
+        if header_fits {
+            assert!(matches!(scanned, Ok(Some(ref metadata)) if metadata.cwd == PROJECT_CWD));
+        } else {
+            assert!(matches!(
+                scanned,
+                Err(SessionError::DecodedBudgetExceeded { .. })
+            ));
+        }
     }
 
     #[test]
