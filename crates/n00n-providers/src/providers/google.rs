@@ -1057,6 +1057,17 @@ fn delivery_metadata(emitted_event: bool) -> RequestDeliveryMetadata {
     metadata
 }
 
+/// Unlike the parsed-API-error path, `suppress_retry_after_send` escalates
+/// an `Io`/`Timeout` error to non-retryable on any `Some` metadata, so the
+/// `emitted_event` gate has to live here instead.
+fn suppress_retry_if_emitted(error: AgentError, emitted_event: bool) -> AgentError {
+    if emitted_event {
+        error.suppress_retry_after_send(Some(delivery_metadata(true)))
+    } else {
+        error
+    }
+}
+
 async fn parse_sse(
     response: isahc::Response<isahc::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
@@ -1071,7 +1082,12 @@ async fn parse_sse(
     let mut tool_call_count = 0usize;
     let mut emitted_event = false;
 
-    while let Some(event) = stream.next_event().await? {
+    loop {
+        let event = match stream.next_event().await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(error) => return Err(suppress_retry_if_emitted(error, emitted_event)),
+        };
         let data = event.data.trim();
         if data.contains("\"error\"")
             && let Ok(payload) = serde_json::from_str::<GoogleErrorPayload>(data)
@@ -1178,7 +1194,10 @@ async fn parse_sse(
     }
 
     if stop_reason.is_none() {
-        return Err(stream_truncated_error());
+        return Err(suppress_retry_if_emitted(
+            stream_truncated_error(),
+            emitted_event,
+        ));
     }
 
     Ok(StreamResponse {
@@ -1576,13 +1595,52 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_stream_without_finish_reason_is_retryable() {
+    fn parse_sse_stream_without_finish_reason_after_output_is_not_retryable() {
         let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"par\"}]}}]}\n\n";
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
         let err = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
-        assert!(err.is_retryable());
+        assert!(
+            !err.is_retryable(),
+            "truncation after emitted output must not be retried: {err:?}"
+        );
+        assert!(
+            matches!(err, AgentError::RequestSent { .. }),
+            "expected RequestSent, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_sse_stream_without_finish_reason_before_output_stays_retryable() {
+        let data = b"";
+        let response = mock_response(data);
+        let (tx, _rx) = flume::unbounded();
+        let err = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
+        assert!(
+            err.is_retryable(),
+            "truncation before any output must stay retryable: {err:?}"
+        );
         assert!(matches!(err, AgentError::Io(_)));
+    }
+
+    #[test]
+    fn parse_sse_read_error_after_output_is_not_retryable() {
+        // A valid text delta, then a line that is not valid UTF-8: next_event()
+        // itself returns an `Io` error, distinct from the no-terminator case above.
+        let mut data =
+            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"par\"}]}}]}\n\n".to_vec();
+        data.extend_from_slice(b"data: \xff\xfe\n\n");
+        let response = mock_response(&data);
+        let (tx, _rx) = flume::unbounded();
+        let err = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap_err();
+        assert!(
+            !err.is_retryable(),
+            "a stream read error after emitted output must not be retried: {err:?}"
+        );
+        assert!(
+            matches!(err, AgentError::RequestSent { .. }),
+            "expected RequestSent, got: {err:?}"
+        );
     }
 
     #[test]
