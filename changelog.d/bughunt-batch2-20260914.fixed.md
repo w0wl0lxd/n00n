@@ -14,3 +14,4 @@
 - Fixed an Anthropic model-list loop on a repeating cursor, Gemini streams being retried after output when the stream broke or ended early, and log rotation removing the open log file when no backups are kept.
 - Fixed the session scan cache trusting Windows creation time as a file identity, the daemon dropping replies to requests it had already handled at shutdown, and the ACP server writing on after a failed stdout write.
 - Fixed the code highlighter reusing output for an edited line, markdown wrapping splitting emoji sequences, and dot segments bypassing the `n00n-semble` remote allowlist.
+- Fixed the session scan cache showing an old title after an in-place rewrite that kept the size and mtime, `win:set_config({ footer = {} })` not clearing the footer, and Gemini function-call replays sending an id that Gemini never sent.
