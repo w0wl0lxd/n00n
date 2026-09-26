@@ -1969,6 +1969,49 @@ case("checkpoint_prune_rejects_path_traversal_ids", function()
   eq(rm_path, nil, "no remove may happen for a rejected id")
 end)
 
+case("checkpoint_prune_validates_all_ids_before_removing_any", function()
+  local checkpoint = require("n00n.checkpoint")
+  local old_list = checkpoint.list
+  local old_rm = n00n.fs.rm
+  local removed = {}
+  checkpoint.list = function()
+    return {
+      { checkpoint_id = "valid", timestamp = 2 },
+      { checkpoint_id = "../evil", timestamp = 1 },
+    }
+  end
+  n00n.fs.rm = function(path)
+    removed[#removed + 1] = path
+    return true
+  end
+
+  local ok, err = checkpoint.prune("mixed-run", 0)
+
+  checkpoint.list = old_list
+  n00n.fs.rm = old_rm
+  eq(ok, nil, "one invalid checkpoint id must reject the whole prune")
+  assert(err and err:find("invalid checkpoint_id", 1, true), "expected validation error, got: " .. tostring(err))
+  eq(#removed, 0, "no checkpoint may be removed until every id in the batch is validated")
+end)
+
+case("utf8_prefix_stops_at_first_invalid_byte", function()
+  local utf8_lib = require("n00n.utf8")
+  local result = utf8_lib.prefix("a\xffb", 2)
+  eq(result, "a", "prefix must stop before the first invalid byte")
+end)
+
+case("utf8_prefix_rejects_invalid_bytes_on_full_length_path", function()
+  local utf8_lib = require("n00n.utf8")
+  local result = utf8_lib.prefix("a\xffb", 10)
+  eq(result, "a", "the full-length fast path must still return only valid UTF-8")
+end)
+
+case("utf8_prefix_still_cuts_valid_multibyte_sequences", function()
+  local utf8_lib = require("n00n.utf8")
+  local result = utf8_lib.prefix("h\xc3\xa9llo", 2)
+  eq(result, "h", "a multibyte character that does not fit must not be split")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

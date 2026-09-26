@@ -217,12 +217,16 @@ function M.prune(run_id, keep_n)
     to_remove[#to_remove + 1] = checkpoints[i].checkpoint_id
   end
 
+  -- ids come from on-disk checkpoint files; validate every id in the batch
+  -- before removing any of them, so a malformed id never leaves a partial prune
   for _, ckpt_id in ipairs(to_remove) do
-    -- ids come from on-disk checkpoint files; validate before building a path
     local id_ok, id_err = validate_id(ckpt_id)
     if not id_ok then
       return nil, "invalid checkpoint_id: " .. id_err
     end
+  end
+
+  for _, ckpt_id in ipairs(to_remove) do
     local path = n00n.fs.joinpath(dir, ckpt_id .. ".json")
     local rm_ok, rm_err = n00n.fs.rm(path)
     if not rm_ok then
