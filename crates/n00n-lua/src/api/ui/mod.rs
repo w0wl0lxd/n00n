@@ -7,6 +7,7 @@ use std::time::Duration;
 use humantime::format_duration;
 use mlua::{Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_fn, lua_table};
+use tracing::{debug, warn};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::api::util::command::{
@@ -35,6 +36,9 @@ const DEFAULT_BORDER: Border = Border::Rounded;
 const DEFAULT_TITLE_POS: TitlePos = TitlePos::Left;
 const DEFAULT_SPLIT: Split = Split::None;
 const DEFAULT_FOOTER_LABEL: &str = "";
+const UI_CHANNEL_CLOSED: &str = "ui reply channel closed";
+const UI_DISPATCH_FAILED: &str = "ui action channel full or closed";
+const HINT_LABEL_ERROR: &str = "status hint label must be a string";
 
 use crate::runtime::with_task_bufs;
 use win::WinHandle;
@@ -149,14 +153,16 @@ fn theme_color(lua: &Lua, name: String) -> LuaResult<mlua::Value> {
 /// end
 #[lua_fn]
 async fn highlight(lua: Lua, code: String, lang: String, opts: Option<Table>) -> LuaResult<Table> {
-    let independent = opts
-        .as_ref()
-        .and_then(|t| t.get::<bool>("independent").ok())
-        .unwrap_or_else(|| DEFAULT_INDEPENDENT);
-    let prefix = opts
-        .as_ref()
-        .and_then(|t| t.get::<String>("prefix").ok())
-        .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
+    let independent = match &opts {
+        Some(t) => optional_bool(t, "independent")?,
+        None => None,
+    }
+    .unwrap_or_else(|| DEFAULT_INDEPENDENT);
+    let prefix = match &opts {
+        Some(t) => optional_field::<String>(t, "prefix")?,
+        None => None,
+    }
+    .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
     let segments = smol::unblock(move || {
         if independent {
             n00n_highlight::highlight_lines_independent(&lang, &code)
@@ -213,7 +219,7 @@ fn humantime(_lua: &Lua, secs: u64) -> LuaResult<String> {
 #[lua_fn]
 fn terminal_size(lua: &Lua) -> LuaResult<Table> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or_else(|error| {
-        tracing::debug!(%error, "terminal size unavailable; returning default");
+        debug!(%error, "terminal size unavailable; returning default");
         DEFAULT_TERM_SIZE
     });
     let tbl = lua.create_table()?;
@@ -312,12 +318,19 @@ async fn open_editor(
         })
         .is_err()
     {
+        warn!(
+            reason = UI_DISPATCH_FAILED,
+            "open_editor: ui unavailable; returning dispatch failure"
+        );
         return Ok(EDITOR_DISPATCH_FAILED);
     }
-    Ok(reply_rx
-        .recv_async()
-        .await
-        .unwrap_or_else(|_| EDITOR_DISPATCH_FAILED))
+    Ok(reply_rx.recv_async().await.unwrap_or_else(|_| {
+        warn!(
+            reason = UI_CHANNEL_CLOSED,
+            "open_editor: ui unavailable; returning dispatch failure"
+        );
+        EDITOR_DISPATCH_FAILED
+    }))
 }
 
 /// Opens n00n's native model discovery picker and waits for a selection.
@@ -339,9 +352,20 @@ async fn pick_model(
         .try_send(UiAction::PickModel { current, reply_tx })
         .is_err()
     {
+        warn!(
+            reason = UI_DISPATCH_FAILED,
+            "pick_model: ui unavailable; returning nil"
+        );
         return Ok(None);
     }
-    Ok(reply_rx.recv_async().await.ok().flatten())
+    let Ok(selection) = reply_rx.recv_async().await else {
+        warn!(
+            reason = UI_CHANNEL_CLOSED,
+            "pick_model: ui unavailable; returning nil"
+        );
+        return Ok(None);
+    };
+    Ok(selection)
 }
 
 /// Opens a floating or split window that displays the contents of {buf}.
@@ -432,7 +456,10 @@ fn open_win(
         visible,
     };
 
-    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or_else(|_| DEFAULT_TERM_SIZE);
+    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or_else(|error| {
+        debug!(%error, "open_win: terminal size unavailable; sizing against default");
+        DEFAULT_TERM_SIZE
+    });
     let border_chrome = match config.border {
         Border::None => 0,
         _ => 2,
@@ -537,8 +564,11 @@ pub(crate) fn create_ui_table(
                             Ok((
                                 entry.get::<String>(1)?,
                                 entry
-                                    .get::<String>(2)
-                                    .unwrap_or_else(|_| DEFAULT_FOOTER_LABEL.to_string()),
+                                    .get::<Option<String>>(2)
+                                    .map_err(|error| {
+                                        mlua::Error::runtime(format!("{HINT_LABEL_ERROR}: {error}"))
+                                    })?
+                                    .unwrap_or_else(|| DEFAULT_FOOTER_LABEL.to_string()),
                             ))
                         })
                         .collect::<LuaResult<_>>()?;
@@ -821,6 +851,8 @@ mod tests {
     use test_case::test_case;
 
     const MISSING_KEY: &str = "missing";
+    const INDEPENDENT_FIELD: &str = "independent";
+    const PREFIX_FIELD: &str = "prefix";
     const ORANGE_HEX: &str = "#ff8000";
     const TEST_PLUGIN: &str = "test";
 
@@ -1613,6 +1645,81 @@ mod tests {
 
         assert!(error.to_string().contains(field), "{error}");
         assert!(rx.try_recv().is_err(), "a rejected window must not open");
+    }
+
+    #[test_case("\"no\"" ; "string")]
+    #[test_case("0" ; "number")]
+    #[test_case("{}" ; "table")]
+    fn highlight_rejects_non_boolean_independent(value: &str) {
+        let lua = Lua::new();
+        lua.globals().set("ui", ui_table(&lua)).unwrap();
+
+        let error = smol::block_on(
+            lua.load(format!(
+                "return ui.highlight(\"fn main() {{}}\", \"rust\", {{ independent = {value} }})"
+            ))
+            .exec_async(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(INDEPENDENT_FIELD), "{error}");
+    }
+
+    #[test_case("{}" ; "table")]
+    #[test_case("true" ; "boolean")]
+    fn highlight_rejects_non_string_prefix(value: &str) {
+        let lua = Lua::new();
+        lua.globals().set("ui", ui_table(&lua)).unwrap();
+
+        let error = smol::block_on(
+            lua.load(format!(
+                "return ui.highlight(\"fn main() {{}}\", \"rust\", {{ prefix = {value} }})"
+            ))
+            .exec_async(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(PREFIX_FIELD), "{error}");
+    }
+
+    #[test]
+    fn highlight_accepts_number_prefix() {
+        let lua = Lua::new();
+        lua.globals().set("ui", ui_table(&lua)).unwrap();
+
+        let lines: Table = smol::block_on(
+            lua.load("return ui.highlight(\"x\", \"rust\", { prefix = 1 })")
+                .eval_async(),
+        )
+        .unwrap();
+
+        assert_eq!(lines.len().unwrap(), 1);
+    }
+
+    #[test_case("{}" ; "table")]
+    #[test_case("true" ; "boolean")]
+    fn set_status_hint_rejects_non_string_label(value: &str) {
+        let lua = Lua::new();
+        let ui = create_ui_table(&lua, None, Arc::from(TEST_PLUGIN)).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+
+        let error = lua
+            .load(format!("ui.set_status_hint({{ {{ \"k\", {value} }} }})"))
+            .exec()
+            .unwrap_err();
+
+        assert!(error.to_string().contains(HINT_LABEL_ERROR), "{error}");
+    }
+
+    #[test]
+    fn set_status_hint_accepts_missing_label() {
+        let lua = Lua::new();
+        let ui = create_ui_table(&lua, None, Arc::from(TEST_PLUGIN)).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+
+        lua.load("ui.set_status_hint({ { \"k\" } })")
+            .exec()
+            .unwrap();
     }
 
     #[test]
