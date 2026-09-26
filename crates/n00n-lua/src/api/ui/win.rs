@@ -6,8 +6,8 @@ use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_class, lua_fn};
 
 use super::{
-    anchor_value, border_value, optional_field, parse_footer, split_value, title_pos_value,
-    try_parse_dimension,
+    anchor_value, border_value, optional_bool, optional_field, parse_footer, split_value,
+    title_pos_value, try_parse_dimension,
 };
 use crate::api::util::command::{FloatConfigPatch, WinCommand, WinEvent};
 use crate::docs::{FnDoc, ParamDoc};
@@ -225,7 +225,7 @@ fn set_config(_lua: &Lua, this: &WinHandle, opts: Table) -> LuaResult<()> {
             .map(|value| split_value(&value))
             .transpose()?,
         zindex: optional_field(&opts, "zindex")?,
-        cursor_line: optional_field(&opts, "cursor_line")?,
+        cursor_line: optional_bool(&opts, "cursor_line")?,
         reserved_top: optional_field(&opts, "reserved_top")?,
         order: optional_field(&opts, "order")?,
         width: try_parse_dimension(&opts, "width")?,
@@ -354,7 +354,11 @@ lua_class! {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
+
+    const CURSOR_LINE_FIELD: &str = "cursor_line";
 
     fn make_channels() -> (
         flume::Sender<WinEvent>,
@@ -463,6 +467,26 @@ mod tests {
             assert_eq!(recv_task.await.unwrap(), "key");
         }));
         assert!(matches!(cmd_rx.try_recv(), Ok(WinCommand::SetCursor(2))));
+    }
+
+    #[test_case("\"no\"" ; "string")]
+    #[test_case("0" ; "number")]
+    #[test_case("{}" ; "table")]
+    fn set_config_rejects_non_boolean_cursor_line(value: &str) {
+        let lua = mlua::Lua::new();
+        let (_event_tx, cmd_rx, handle) = make_channels();
+        lua.globals().set("win", handle).unwrap();
+
+        let error = lua
+            .load(format!("win:set_config({{ cursor_line = {value} }})"))
+            .exec()
+            .unwrap_err();
+
+        assert!(error.to_string().contains(CURSOR_LINE_FIELD), "{error}");
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a rejected patch must not be sent"
+        );
     }
 
     #[test]

@@ -393,14 +393,13 @@ fn open_win(
     }
     let title: String =
         optional_field(&opts, "title")?.unwrap_or_else(|| DEFAULT_TITLE.to_string());
-    let cursor_line: bool =
-        optional_field(&opts, "cursor_line")?.unwrap_or_else(|| DEFAULT_CURSOR_LINE);
+    let cursor_line = optional_bool(&opts, "cursor_line")?.unwrap_or_else(|| DEFAULT_CURSOR_LINE);
     let footer = parse_footer(&opts)?;
     let reserved_bottom: usize =
         optional_field(&opts, "reserved_bottom")?.unwrap_or_else(|| DEFAULT_RESERVED_BOTTOM);
     let reserved_top: usize =
         optional_field(&opts, "reserved_top")?.unwrap_or_else(|| DEFAULT_RESERVED_TOP);
-    let focus: bool = optional_field(&opts, "focus")?.unwrap_or_else(|| DEFAULT_FOCUS);
+    let focus = optional_bool(&opts, "focus")?.unwrap_or_else(|| DEFAULT_FOCUS);
     let zindex: u16 = optional_field(&opts, "zindex")?.unwrap_or_else(|| DEFAULT_ZINDEX);
 
     let width = parse_dimension(&opts, "width", Dimension::Percent(60))?;
@@ -412,7 +411,7 @@ fn open_win(
     let title_pos = parse_title_pos(&opts)?;
     let split = parse_split(&opts)?;
     let order: u16 = optional_field(&opts, "order")?.unwrap_or_else(|| DEFAULT_ORDER);
-    let visible: bool = optional_field(&opts, "visible")?.unwrap_or_else(|| DEFAULT_VISIBLE);
+    let visible = optional_bool(&opts, "visible")?.unwrap_or_else(|| DEFAULT_VISIBLE);
 
     let config = FloatConfig {
         width,
@@ -570,6 +569,19 @@ pub(crate) fn optional_field<T: mlua::FromLua>(tbl: &Table, field: &str) -> LuaR
     tbl.get::<T>(field).map(Some).map_err(|error| {
         mlua::Error::runtime(format!("option '{field}' has an invalid value: {error}"))
     })
+}
+
+/// Reads an optional boolean field. mlua converts every non-nil value to
+/// `true`, so `optional_field::<bool>` would accept `"no"` or `0` silently.
+pub(crate) fn optional_bool(tbl: &Table, field: &str) -> LuaResult<Option<bool>> {
+    match tbl.get::<mlua::Value>(field)? {
+        mlua::Value::Nil => Ok(None),
+        mlua::Value::Boolean(value) => Ok(Some(value)),
+        other => Err(mlua::Error::runtime(format!(
+            "option '{field}' must be a boolean, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn invalid_dimension(key: &str) -> mlua::Error {
@@ -810,6 +822,7 @@ mod tests {
 
     const MISSING_KEY: &str = "missing";
     const ORANGE_HEX: &str = "#ff8000";
+    const TEST_PLUGIN: &str = "test";
 
     fn footer_entry(lua: &Lua, key: &str, label: &str) -> Table {
         let t = lua.create_table().unwrap();
@@ -1579,6 +1592,27 @@ mod tests {
         let r: Table = f.call(("", 0usize)).unwrap();
         assert_eq!(r.get::<String>("head").unwrap(), "");
         assert_eq!(r.get::<String>("tail").unwrap(), "");
+    }
+
+    #[test_case("focus", "\"no\"" ; "focus_string")]
+    #[test_case("visible", "0" ; "visible_number")]
+    #[test_case("cursor_line", "{}" ; "cursor_line_table")]
+    fn open_win_rejects_non_boolean_flags(field: &str, value: &str) {
+        let lua = Lua::new();
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let ui = create_ui_table(&lua, Some(tx), Arc::from(TEST_PLUGIN)).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+        lua.globals()
+            .set("buf", buf::BufferStore::new().create())
+            .unwrap();
+
+        let error = lua
+            .load(format!("ui.open_win(buf, {{ {field} = {value} }})"))
+            .exec()
+            .unwrap_err();
+
+        assert!(error.to_string().contains(field), "{error}");
+        assert!(rx.try_recv().is_err(), "a rejected window must not open");
     }
 
     #[test]
