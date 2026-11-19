@@ -20,10 +20,11 @@ Read `justfile` for more recipes.
 
 The workspace lint configuration lives in the root `Cargo.toml` `[workspace.lints]` and `clippy.toml`; every crate opts in via `[lints] workspace = true`.
 
-- `unsafe_code = "deny"` workspace-wide. Existing unsafe sits in `n00n-lua` (Luau runtime), `n00n-agent` and `n00n-ui` (process control), `n00n-config` (`.env` loading), `n00n-providers`, `n00n-storage`, and the root binary (self-updater). Find it with `rg 'allow\(unsafe_code\)' --glob '*.rs'`. Each use carries an explicit `#[allow(unsafe_code)]` and a SAFETY comment. New unsafe, FFI, global mutable state, `static mut`, or unchecked transmute-like behavior needs a written review and a crate-level lint exception.
+- `unsafe_code = "deny"` workspace-wide. Existing unsafe sits in `n00n-lua` (Luau runtime), `n00n-agent` and `n00n-ui` (process control), `n00n-config` (`.env` loading), `n00n-providers`, `n00n-storage`, and the root binary (self-updater in `src/update.rs`, process control in `src/cmd/agent.rs`). Find it with `rg 'allow\(unsafe_code\)' --glob '*.rs'`.
+- New unsafe, FFI, global mutable state, `static mut`, or unchecked transmute-like behavior needs a written review. Give each unsafe use its own `#[allow(unsafe_code)]` and a SAFETY comment. `n00n-lua` is the only crate with a crate-level `#![allow(unsafe_code)]` (it isolates the Luau FFI boundary). Do not add a crate-level exception elsewhere: it silences the lint for every later unsafe block in that crate.
 - `unwrap_used`, `expect_used`, and `panic` are denied in production code. Tests are exempt via `clippy.toml`.
 - `todo!`, `unimplemented!`, and `dbg!` macros are denied.
-- `unwrap_or`, `unwrap_or_default`, `.ok()` on `Result`, and other silent-default patterns are denied (`clippy.toml` `disallowed-methods`). See Error Handling.
+- `unwrap_or` and `unwrap_or_default` on `Option` and `Result` are denied through `clippy.toml` `disallowed-methods`. Clippy does not flag `.ok()` on `Result`, so code review enforces that rule. See Error Handling.
 - `pedantic` clippy lints are warned and must pass under `cargo clippy --all --tests -- -D warnings` once the existing codebase is cleaned up.
 - No wildcard imports.
 
@@ -57,19 +58,24 @@ The workspace lint configuration lives in the root `Cargo.toml` `[workspace.lint
 - Add new dependencies to the workspace `Cargo.toml` first, then `workspace = true` in the crate.
 - Try solving with existing dependencies before adding new ones.
 - For a new dependency, state its purpose, check maintenance and license compatibility, and run `cargo deny check`. Prefer versions published at least 7 days ago. Do not use floating ranges (`latest`, `*`, unbounded `>=`).
+- Prefer well-maintained crates from crates.io.
 - Disable default features when they pull unused networking, TLS, compression, native, proc-macro, or runtime surface.
 
 ## Trust Boundaries and Security
 
 - Treat LLM and provider output as untrusted input. Validate against schemas, domain constraints, and source evidence before persistence or action.
+- Do not commit production or private credentials, API keys, tokens, cookies, auth headers, or user data. The gitleaks hook (`hk.pkl`) and the CI secrets job catch some leaks, but they do not replace this rule.
 - Do not log raw provider payloads, prompts, credentials, or user session data.
 - Validate and authorize HTTP, file, queue, config/env, LLM output, and provider callbacks before mutation or persistence.
 - Apply prompt-injection defenses where documents, user text, or provider messages are included in prompts or tool calls.
 - Tool execution requires allowlisted tools, scoped credentials, explicit user context, audit events, and refusal/denial tests.
 
-## Attribution
+## Worktrees, Commits, and Attribution
 
-- Never add AI-agent attribution to commits, PRs, changelogs, or authored content.
+- Do non-trivial or multi-file changes in a dedicated git worktree on a new branch, so other work in the checkout stays intact.
+- Do not revert, delete, reformat, stage, or commit unrelated user changes.
+- Commit with a Conventional Commit message, push the branch, and open a PR. Do not force-push or push to `main`: shared history stays reviewable and recoverable.
+- Do not add AI-agent attribution to commits, PRs, changelogs, or authored content.
 
 ## Token-efficient exploration
 
@@ -82,9 +88,17 @@ Every tool result spends context tokens. Prefer structural, pre-indexed tools ov
 - **Use `search_code` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
 - **Parallelize:** use `run_batch` for independent calls.
 - **Filter and pipeline with `run_python`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
+- **AST-aware search (`ast-grep`):** if you configure the `ast-grep` MCP server, use it for structural search and safe refactoring. It is more precise than `search_code` and safer than `sed`. Configure it in `.n00n/mcp.toml` as `[mcp.ast-grep]` with a `command` array and a `timeout` in milliseconds.
 - **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
 
+`run_shell` rewrites supported commands through `rtk` when the `rtk` CLI is installed, which cuts output tokens. Use `rtk proxy <command>` when you need the raw output.
+
 Do not use `run_shell` for file writes, moves, deletes, or broad destructive operations. Use `edit_file`/`edit_file_bulk`/`write_file` for those.
+
+## Verification
+
+- Before you fix an unfamiliar failure mode, third-party tool, library or API behavior, or CI issue, read its documented behavior first.
+- Report real command results. Separate failures that already exist on the base branch from regressions in the code you touched.
 
 ## Architecture
 
