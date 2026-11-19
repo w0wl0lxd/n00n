@@ -13,38 +13,29 @@ cargo clippy --all --tests -- -D warnings
 cargo nextest run --workspace
 ```
 
-Use `cargo test --workspace` if `cargo-nextest` is not installed.
 Run `n00n-providers` tests single-threaded if the dynamic script-discovery tests flake: `RUST_TEST_THREADS=1 cargo test -p n00n-providers`.
 Read `justfile` for more recipes.
 
 ## Rust Hard Gates
 
-The workspace lint configuration is the law. It lives in the root `Cargo.toml` `[workspace.lints]` and `clippy.toml`; every crate opts in via `[lints] workspace = true`.
+The workspace lint configuration lives in the root `Cargo.toml` `[workspace.lints]` and `clippy.toml`; every crate opts in via `[lints] workspace = true`.
 
-- `unsafe_code = "deny"` workspace-wide. Existing unsafe is limited to the Luau runtime in `n00n-lua`, process control in `n00n-agent`/`n00n-ui`, `.env` loading in `n00n-config`, and the self-updater in the root binary. Each call carries an explicit `#[allow(unsafe_code)]` and a SAFETY comment. New unsafe requires a written review.
+- `unsafe_code = "deny"` workspace-wide. Existing unsafe sits in `n00n-lua` (Luau runtime), `n00n-agent` and `n00n-ui` (process control), `n00n-config` (`.env` loading), `n00n-providers`, `n00n-storage`, and the root binary (self-updater). Find it with `rg 'allow\(unsafe_code\)' --glob '*.rs'`. Each use carries an explicit `#[allow(unsafe_code)]` and a SAFETY comment. New unsafe, FFI, global mutable state, `static mut`, or unchecked transmute-like behavior needs a written review and a crate-level lint exception.
 - `unwrap_used`, `expect_used`, and `panic` are denied in production code. Tests are exempt via `clippy.toml`.
 - `todo!`, `unimplemented!`, and `dbg!` macros are denied.
-- `unwrap_or`, `unwrap_or_default`, `.ok()` on `Result`, and other silent-default patterns are denied. Missing data, parse failures, dependency errors, closed channels, and invalid state must become typed errors or explicit sanitized logged rejection.
+- `unwrap_or`, `unwrap_or_default`, `.ok()` on `Result`, and other silent-default patterns are denied (`clippy.toml` `disallowed-methods`). See Error Handling.
 - `pedantic` clippy lints are warned and must pass under `cargo clippy --all --tests -- -D warnings` once the existing codebase is cleaned up.
 - No wildcard imports.
-- No new `unsafe` blocks, FFI, global mutable state, `static mut`, or unchecked transmute-like behavior without a written review and a crate-level lint exception.
 
 ## Code Style
 
 - No trivial comments.
-- Minimal bloat (KISS, DRY, SRP).
 - No unnecessary state (variables, fields, arguments).
-- Each line of code should justify its existence.
-- Follow Rust idioms and best practices; latest Rust features can be used.
-- Descriptive variable and function names.
 - Import types at top of file and use short names everywhere (e.g. `use std::sync::Arc;` then `Arc<T>`, never `std::sync::Arc<T>` inline).
 - Keep consts at top of file, right after imports.
-- Explicit error handling with `Result<T, E>` over panics.
-- Use `thiserror` for domain-specific errors and `color-eyre` at binary edges.
 - No inline magic numbers or strings.
 - `#[derive(Copy)]` only on structs with one primitive field.
 - Prefer structured logging with wide, useful fields.
-- Provide helpful error messages.
 
 ## Testing
 
@@ -59,31 +50,25 @@ The workspace lint configuration is the law. It lives in the root `Cargo.toml` `
 
 - Propagate typed errors with `?`, `ok_or_else`, and `map_err`.
 - Library crates use `thiserror`; binaries use `color-eyre`.
-- Missing data, parse failures, dependency errors, closed channels, and invalid state must not be silently defaulted away. Return an error, reject the operation, or use an explicitly named fallback that emits sanitized structured logs.
-- Do not call `.ok()` on `Result` to discard errors.
+- Missing data, parse failures, dependency errors, closed channels, and invalid state must not be silently defaulted away, and `.ok()` must not discard a `Result` error. Return a typed error, reject the operation with a sanitized log, or use an explicitly named fallback that emits sanitized structured logs.
 
 ## Dependencies and Supply Chain
 
 - Add new dependencies to the workspace `Cargo.toml` first, then `workspace = true` in the crate.
 - Try solving with existing dependencies before adding new ones.
-- New dependencies require a purpose, a maintenance check, license compatibility, and `cargo deny check`. Prefer versions published at least 7 days ago. No floating ranges (`latest`, `*`, unbounded `>=`).
-- Prefer well-maintained crates from crates.io.
+- For a new dependency, state its purpose, check maintenance and license compatibility, and run `cargo deny check`. Prefer versions published at least 7 days ago. Do not use floating ranges (`latest`, `*`, unbounded `>=`).
 - Disable default features when they pull unused networking, TLS, compression, native, proc-macro, or runtime surface.
 
 ## Trust Boundaries and Security
 
 - Treat LLM and provider output as untrusted input. Validate against schemas, domain constraints, and source evidence before persistence or action.
-- Do not commit production/private credentials, API keys, tokens, cookies, auth headers, or user data.
 - Do not log raw provider payloads, prompts, credentials, or user session data.
 - Validate and authorize HTTP, file, queue, config/env, LLM output, and provider callbacks before mutation or persistence.
 - Apply prompt-injection defenses where documents, user text, or provider messages are included in prompts or tool calls.
 - Tool execution requires allowlisted tools, scoped credentials, explicit user context, audit events, and refusal/denial tests.
 
-## Worktree and Subagent Discipline
+## Attribution
 
-- Non-trivial or multi-file changes happen in a dedicated git worktree on a new branch.
-- Do not revert, delete, reformat, stage, or commit unrelated user changes.
-- Ship finished work: commit with a clear Conventional Commit message, push the branch, and open a draft PR. Do not force-push or push to main.
 - Never add AI-agent attribution to commits, PRs, changelogs, or authored content.
 
 ## Token-efficient exploration
@@ -97,37 +82,9 @@ Every tool result spends context tokens. Prefer structural, pre-indexed tools ov
 - **Use `search_code` as a fallback:** for literal string matching or when no index is available, not as the default exploration tool.
 - **Parallelize:** use `run_batch` for independent calls.
 - **Filter and pipeline with `run_python`:** chain calls, filter large outputs, and transform data inside the sandboxed Python interpreter. Only the final result should reach the context window.
-- **AST-aware search (`ast-grep`):** if you configure the `ast-grep` MCP server, use it for AST-pattern structural search and safe refactoring. It is more precise than `search_code` and safer than `sed` for code changes. Example `.n00n/mcp.toml`:
-
-  ```toml
-  [mcp.ast-grep]
-  command = ["/path/to/ast-grep-mcp-host"]
-  timeout = 300000
-  ```
-
 - **Compress structured data:** prefer `n00n.json.tooned` (lossless JSON/TOON passthrough) over plain JSON when passing structured data between tools or scripts.
-- **Compress shell output with `rtk`:** `run_shell` automatically rewrites supported commands through `rtk` when the `rtk` CLI is installed, typically cutting output tokens by 60-90%. Use `run_shell` (not raw `grep`/`read`/`cat`) for `git`, `cargo`, `rg`, `grep`, `gh`, `podman`, `docker`, `npm`, `pip`, `python`, `find`, `ls`, `cat`, `head`, `tail`, and other system commands. `jq`/`yq` and unsupported flags are run unchanged. Use `rtk proxy <command>` when exact raw shell output is required. Combine with `context-mode` once installed.
-- **Offload reasoning with `thoughtbox`:** use sessions and the knowledge graph for non-trivial reasoning, durable context, and anything that should outlive the session. This keeps the context window focused on the current task.
 
-### Shell and RTK patterns
-
-These are the modern 2026 defaults for common shell workflows. Run them through `run_shell`; n00n will rewrite them to `rtk` equivalents when possible.
-
-- **Git:** `git status`, `git diff`, `git log --oneline`, `git branch`, `git remote -v`
-- **Search:** `rg 'pattern' src/`, `grep 'pattern' file`, `find . -name '*.rs' -type f`
-- **JSON/YAML:** `jq '.foo.bar' file.json`, `yq '.foo.bar' file.yaml` (run unchanged; use `rtk json file` for a compact JSON view if queries are not needed)
-- **Build/test:** `cargo test`, `cargo clippy`, `cargo build`, `just test`
-- **GitHub CLI:** `gh pr checks`, `gh pr view`, `gh run list`
-- **Lists:** `ls -la`, `cat file`, `head -n 20 file`, `tail -n 20 file`
-- **Large outputs:** always wrap with `rtk` (`rtk rg`, `rtk cargo test`, `rtk cargo nextest`) or let `run_shell` auto-rewrite.
-- **Exact output:** use `rtk proxy <command>` when the rewrite would drop details you need.
-
-Do **not** use `run_shell` for file writes, moves, deletes, or broad destructive operations. Use `edit_file`/`edit_file_bulk`/`write_file` for those.
-
-## Research and Verification
-
-- Before fixing an unfamiliar failure mode, third-party CLI or tool behavior, library or API behavior, or infra/CI/deployment issue, research the documented behavior first. Use `context7` for current docs, `exa` and web search for known issues, `explore_code`/`map_codegraph`/`index_file` for codebase evidence, and `thoughtbox` to synthesize findings.
-- Report real command results and separate unrelated red-baseline failures from touched-surface regressions.
+Do not use `run_shell` for file writes, moves, deletes, or broad destructive operations. Use `edit_file`/`edit_file_bulk`/`write_file` for those.
 
 ## Architecture
 
@@ -142,7 +99,7 @@ Rust workspace, key crates in `crates/`:
 - n00n-lua: Lua plugin system with built-in plugins in ./plugins
 - n00n-acp: ACP ndjson stdio server
 
-Built-in Lua plugins in ./plugins: explore, index, bash, glob, question, skill, memory, webfetch, websearch, todo_write, read, write, edit, task, workflow, code_execution, batch, team, codegraph.
+Each built-in Lua plugin has its own directory in `./plugins` (for example `explore`, `bash`, `edit`, `team`, `codegraph`).
 
 ## Docs
 
