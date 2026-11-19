@@ -32,6 +32,7 @@ The workspace lint configuration lives in the root `Cargo.toml` `[workspace.lint
 
 - No trivial comments.
 - No unnecessary state (variables, fields, arguments).
+- Follow Rust idioms and best practices; latest Rust features can be used.
 - Import types at top of file and use short names everywhere (e.g. `use std::sync::Arc;` then `Arc<T>`, never `std::sync::Arc<T>` inline).
 - Keep consts at top of file, right after imports.
 - No inline magic numbers or strings.
@@ -75,7 +76,7 @@ The workspace lint configuration lives in the root `Cargo.toml` `[workspace.lint
 - Do non-trivial or multi-file changes in a dedicated git worktree on a new branch, so other work in the checkout stays intact.
 - Do not revert, delete, reformat, stage, or commit unrelated user changes.
 - Commit with a Conventional Commit message, push the branch, and open a PR. Do not force-push or push to `main`: shared history stays reviewable and recoverable.
-- Do not add AI-agent attribution to commits, PRs, changelogs, or authored content.
+- Never add AI-agent attribution to commits, PRs, changelogs, or authored content.
 
 ## Token-efficient exploration
 
