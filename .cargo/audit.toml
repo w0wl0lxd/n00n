@@ -6,8 +6,5 @@
 #   - quick-xml 0.39.4: only used by wayland-scanner at build time to parse
 #     trusted Wayland protocol XML files; no untrusted XML is parsed at runtime.
 ignore = [
-  "RUSTSEC-2026-0176",
   "RUSTSEC-2026-0177",
-  "RUSTSEC-2026-0194",
-  "RUSTSEC-2026-0195",
 ]
