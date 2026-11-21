@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794623545932,
+  "lastUpdate": 1795228400350,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -28153,6 +28153,112 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 95054,
             "range": "± 7655",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e4a90576d63a4aed992aead798d8d86cdf6da161",
+          "message": "docs(agents): trim AGENTS.md and remove duplicated or stale guidance (#558)\n\n* docs(agents): trim AGENTS.md and remove duplicated or stale guidance\n\n* docs(agents): restore credential, unsafe, push, and verification rules\n\n* docs(agents): name both n00n-lua targets with a crate-level unsafe allow\n\n* docs(agents): restore base attribution and Rust-features wording",
+          "timestamp": "2026-11-19T05:35:49Z",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/e4a90576d63a4aed992aead798d8d86cdf6da161"
+        },
+        "date": 1795228399376,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5115879,
+            "range": "± 130978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1915455,
+            "range": "± 17284",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1893987,
+            "range": "± 17209",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5905117,
+            "range": "± 11943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3008283,
+            "range": "± 7454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2996800,
+            "range": "± 23959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 430401,
+            "range": "± 15875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130565,
+            "range": "± 240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130382,
+            "range": "± 317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 840380,
+            "range": "± 25177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 519333,
+            "range": "± 5648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 520513,
+            "range": "± 10742",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 60148,
+            "range": "± 1095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 95412,
+            "range": "± 8191",
             "unit": "ns/iter"
           }
         ]
