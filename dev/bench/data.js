@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795228400350,
+  "lastUpdate": 1795617616935,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -28259,6 +28259,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 95412,
             "range": "± 8191",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6abfd6eb2abb8e7869bdb49f9883df502cafbed5",
+          "message": "fix(deps): bump url and rusqlite for RUSTSEC-2026-0592 and -0459 (#569)\n\n* fix(deps): bump url to 2.5.9 for RUSTSEC-2026-0592\n\nUrl::origin() recursed on nested blob: URLs without a depth limit, so a\ndeeply nested blob: URL crashed any process calling Url::origin() on\nuntrusted input. url 2.5.9 takes the inner origin only for http, https,\nand file schemes and never recurses.\n\nUpdates the workspace pin and lockfile from 2.5.8 to the patched\nnon-yanked 2.5.9 release, including its required form_urlencoded 1.2.3\nbump. No other dependency changes.\n\nCloses #562\n\n* fix(deps): bump rusqlite to 0.41 for RUSTSEC-2026-0459",
+          "timestamp": "2026-11-25T09:25:10-05:00",
+          "tree_id": "a9a26c39418aa70f370026f14102b3bc7d226094",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/6abfd6eb2abb8e7869bdb49f9883df502cafbed5"
+        },
+        "date": 1795617615782,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6997059,
+            "range": "± 87531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1551650,
+            "range": "± 48193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1548614,
+            "range": "± 14272",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7737655,
+            "range": "± 55755",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2854292,
+            "range": "± 10962",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2847601,
+            "range": "± 38691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 699592,
+            "range": "± 7618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 87281,
+            "range": "± 2640",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 86845,
+            "range": "± 1077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1044648,
+            "range": "± 13935",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 449585,
+            "range": "± 5297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 448794,
+            "range": "± 13677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 55947,
+            "range": "± 788",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 97384,
+            "range": "± 9740",
             "unit": "ns/iter"
           }
         ]
