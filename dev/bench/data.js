@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795617616935,
+  "lastUpdate": 1795833263324,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -28367,6 +28367,112 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 97384,
             "range": "± 9740",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd",
+            "email": "w0wl0lxd@tuta.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6abfd6eb2abb8e7869bdb49f9883df502cafbed5",
+          "message": "fix(deps): bump url and rusqlite for RUSTSEC-2026-0592 and -0459 (#569)\n\n* fix(deps): bump url to 2.5.9 for RUSTSEC-2026-0592\n\nUrl::origin() recursed on nested blob: URLs without a depth limit, so a\ndeeply nested blob: URL crashed any process calling Url::origin() on\nuntrusted input. url 2.5.9 takes the inner origin only for http, https,\nand file schemes and never recurses.\n\nUpdates the workspace pin and lockfile from 2.5.8 to the patched\nnon-yanked 2.5.9 release, including its required form_urlencoded 1.2.3\nbump. No other dependency changes.\n\nCloses #562\n\n* fix(deps): bump rusqlite to 0.41 for RUSTSEC-2026-0459",
+          "timestamp": "2026-11-25T14:25:10Z",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/6abfd6eb2abb8e7869bdb49f9883df502cafbed5"
+        },
+        "date": 1795833261986,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 5097887,
+            "range": "± 117003",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1908028,
+            "range": "± 21587",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1903139,
+            "range": "± 12636",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 5989316,
+            "range": "± 310647",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 2983233,
+            "range": "± 86587",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 2902371,
+            "range": "± 41596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 429945,
+            "range": "± 1723",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 130343,
+            "range": "± 1223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 130326,
+            "range": "± 246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 849451,
+            "range": "± 8427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 511759,
+            "range": "± 8280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 544462,
+            "range": "± 10532",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 40013,
+            "range": "± 7058",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 144118,
+            "range": "± 3869",
             "unit": "ns/iter"
           }
         ]
